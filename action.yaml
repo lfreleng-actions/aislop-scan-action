@@ -133,7 +133,10 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         VERSION: ${{ steps.resolve.outputs.version }}
         LOCKED: ${{ steps.resolve.outputs.locked }}
-      run: |
+      # The unlocked branch below deliberately installs a caller-specified
+      # version outside the committed lockfile; the version is validated in
+      # the resolve step, so this ad-hoc install is intentional.
+      run: | # zizmor: ignore[adhoc-packages]
         set -euo pipefail
         # Install under a randomised temporary directory so node_modules
         # never lands in the audited workspace; the cleanup step removes
