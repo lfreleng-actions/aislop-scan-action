@@ -9,5 +9,8 @@
   },
   "dependencies": {
     "aislop": "0.13.1"
+  },
+  "overrides": {
+    "adm-zip": "0.6.0"
   }
 }
