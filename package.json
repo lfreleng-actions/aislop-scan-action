@@ -11,6 +11,8 @@
     "aislop": "0.13.1"
   },
   "overrides": {
-    "adm-zip": "0.6.0"
+    "adm-zip": "0.6.0",
+    "fast-uri": "3.1.4",
+    "@hono/node-server": "2.0.11"
   }
 }
