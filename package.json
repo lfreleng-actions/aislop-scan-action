@@ -13,6 +13,7 @@
   "overrides": {
     "adm-zip": "0.6.0",
     "fast-uri": "3.1.4",
-    "@hono/node-server": "2.0.11"
+    "@hono/node-server": "2.0.11",
+    "tar": "7.5.21"
   }
 }
