@@ -44,7 +44,7 @@ inputs:
   aislop-version:
     description: >-
       Override the bundled pin with an explicit version (for example
-      0.13.1). An override bypasses the bundled lock file and its
+      0.14.1). An override bypasses the bundled lock file and its
       integrity data.
     required: false
     default: ''

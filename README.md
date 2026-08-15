@@ -25,9 +25,9 @@ scanning ruleset) promote findings to merge-blocking later.
 Deploy it across an estate from one place — an organisation required
 workflow — or opt in per repository with a short caller workflow.
 
-The action runs on Linux and macOS runners and needs Node.js 20 or
-newer, `jq`, and `python3` on the PATH (all present on GitHub-hosted
-runners).
+The action runs on Linux and macOS runners and needs Node.js 22.13.0
+or newer, `jq`, and `python3` on the PATH. GitHub-hosted runners ship
+all three; self-hosted runners may need `actions/setup-node`.
 
 ## Usage
 
@@ -128,7 +128,7 @@ pull request, gate on the `exit-code` output in a follow-up step:
 | `scan-mode`          | `changes` | Scan scope: `changes` audits files changed relative to `base`; `full` audits everything.      |
 | `base`               | `""`      | Git ref changes compare against (for example `origin/main`). Empty compares to HEAD.          |
 | `working-directory`  | `.`       | Path within the workspace to scan.                                                            |
-| `aislop-version`     | `""`      | Override the bundled pin (for example `0.13.1`). Bypasses the bundled lock file.              |
+| `aislop-version`     | `""`      | Override the bundled pin (for example `0.14.1`). Bypasses the bundled lock file.              |
 | `extra-args`         | `""`      | Extra raw arguments appended to the aislop call.                                              |
 | `annotate`           | `'true'`  | Emit inline annotations for the top findings: `'true'` or `'false'`.                          |
 | `upload-sarif`       | `'false'` | Publish SARIF to code scanning from the action: `'true'` or `'false'`.                        |
