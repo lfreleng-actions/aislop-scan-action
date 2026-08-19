@@ -109,15 +109,62 @@ pull request, gate on the `exit-code` output in a follow-up step:
    bundled `package-lock.json`, so the integrity hashes committed in
    the lock file verify the npm download. The install lands in a
    temporary directory outside the audited workspace.
-3. aislop scans the changed files (`scan-mode: changes`, compared
+3. The action provisions the engine binaries aislop shells out to —
+   `ruff` for Python, `golangci-lint` for Go — with the bundled
+   `aislop-tools` installer. aislop 0.14.0 dropped the postinstall
+   hook that used to fetch them, so without this step those engines
+   report nothing, inflating the score. See
+   [Engine binaries](#engine-binaries).
+4. aislop scans the changed files (`scan-mode: changes`, compared
    against `base`) or the full working tree (`scan-mode: full`),
    producing a JSON report and a SARIF file. The gate exit code
    becomes the `exit-code` output rather than failing the job.
-4. The action writes a scored findings summary to the job summary and
+5. The action writes a scored findings summary to the job summary and
    emits inline annotations for the top findings.
-5. When `upload-sarif` is `'true'`, the action publishes the SARIF to
+6. When `upload-sarif` is `'true'`, the action publishes the SARIF to
    code scanning under the `aislop` category. The example workflows set
    this for default-branch pushes and keep pull request runs advisory.
+
+## Engine binaries
+
+aislop implements some engines itself and delegates others to external
+binaries: Python formatting and linting run through `ruff`, and Go
+linting through `golangci-lint`. The npm package bundles neither.
+Releases before 0.14.0 fetched them from a package `postinstall` hook;
+0.14.0 dropped that hook and moved the work into an explicit
+`aislop-tools` entry point, so installing the CLI alone now leaves
+both binaries absent.
+
+That failure is silent. A scan missing `ruff` does not error; it
+reports zero Python findings and returns a higher score, which reads
+like a clean repository. The action runs the bundled `aislop-tools`
+installer after `npm ci` and verifies the result.
+
+Verification checks the binaries on disk rather than the installer's
+exit code. `aislop-tools` exits non-zero if any bundled tool fails,
+including the optional .NET analyzers it fetches from `api.nuget.org`,
+even when `ruff` and `golangci-lint` installed cleanly — so the exit
+code alone cannot separate a partial failure from a total one.
+
+A system installation counts. aislop resolves `ruff` and
+`golangci-lint` from the PATH as well as from its bundled copies, so a
+runner that preinstalls them keeps full coverage even when the
+download fails.
+
+The report's per-engine `skipped` flag cannot stand in for this check
+either: it also reads `true` when the scan scope holds no files of
+that language, which is routine in `changes` mode.
+
+When `aislop-version` selects a pre-0.14.0 release the installer is
+absent, so the action skips it and checks the binaries the postinstall
+hook left behind.
+
+When a required binary goes missing the action fails, naming the
+languages that binary covers, and the `engines-ready` output reports
+`false`. That output tracks `ruff` and `golangci-lint`; the optional
+.NET analyzers can fail without changing it. Set `require-engines` to
+`'false'` to downgrade the failure to a warning and scan with reduced
+coverage.
 
 ## Inputs
 
@@ -132,6 +179,7 @@ pull request, gate on the `exit-code` output in a follow-up step:
 | `extra-args`         | `""`      | Extra raw arguments appended to the aislop call.                                              |
 | `annotate`           | `'true'`  | Emit inline annotations for the top findings: `'true'` or `'false'`.                          |
 | `upload-sarif`       | `'false'` | Publish SARIF to code scanning from the action: `'true'` or `'false'`.                        |
+| `require-engines`    | `'true'`  | Fail when `ruff` or `golangci-lint` go missing; `'false'` warns and scans anyway.             |
 | `summary-repository` | `""`      | owner/repo label for step-summary links; takes effect when paired with a valid `summary-sha`. |
 | `summary-sha`        | `""`      | Commit SHA (7–40 hex digits) for step-summary links; pairs with `summary-repository`.         |
 
@@ -141,12 +189,13 @@ pull request, gate on the `exit-code` output in a follow-up step:
 
 <!-- markdownlint-disable MD013 -->
 
-| Name          | Description                                                                |
-| ------------- | -------------------------------------------------------------------------- |
-| `sarif-file`  | Absolute path to the generated SARIF file.                                 |
-| `report-file` | Absolute path to the generated JSON report.                                |
-| `score`       | aislop score (0–100); empty when the scope holds no supported files.       |
-| `exit-code`   | aislop quality-gate exit code: `0` passed, non-zero when the gate failed.  |
+| Name            | Description                                                                           |
+| --------------- | ------------------------------------------------------------------------------------- |
+| `sarif-file`    | Absolute path to the generated SARIF file.                                            |
+| `report-file`   | Absolute path to the generated JSON report.                                           |
+| `score`         | aislop score (0–100); empty when the scope holds no supported files.                  |
+| `exit-code`     | aislop quality-gate exit code: `0` passed, non-zero when the gate failed.             |
+| `engines-ready` | `true` when `ruff` and `golangci-lint` are both present; `false` when one is missing. |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -172,10 +221,15 @@ extra secrets.
 Runners with a restrictive egress policy need to allow:
 
 - `registry.npmjs.org:443` — the aislop package install.
-- `github.com:443`, `objects.githubusercontent.com:443`,
-  `release-assets.githubusercontent.com:443` — the package postinstall
-  step downloads the bundled engine binaries (for example ruff and
-  golangci-lint) from GitHub releases.
+- `github.com:443`, `release-assets.githubusercontent.com:443` — the
+  `aislop-tools` installer downloads the `ruff` and `golangci-lint`
+  engine binaries from GitHub releases. Blocking these makes the
+  action fail unless the runner already provides those tools on the
+  PATH, or `require-engines` is `'false'`.
+- `api.nuget.org:443` — optional. `aislop-tools` also fetches .NET
+  analyzer assemblies from here. Blocking it makes `aislop-tools` exit
+  non-zero, which the action tolerates: the C# engines lose coverage
+  and the rest of the scan proceeds. Allow it to scan C# projects.
 
 The action sets `AISLOP_NO_TELEMETRY=1` and `AISLOP_NO_HISTORY=1`, so
 the CLI makes no telemetry calls at scan time.
