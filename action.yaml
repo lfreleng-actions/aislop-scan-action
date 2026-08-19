@@ -8,10 +8,12 @@
 # package.json and installs it with `npm ci` against the bundled
 # package-lock.json (both via ${{ github.action_path }}; the runner
 # checks this action out at the pinned ref for the caller), so the
-# integrity hashes in the lock file verify the npm download. The scan
-# writes a JSON report and a SARIF file, renders a step summary with
-# the bundled parser, and publishes the SARIF to code scanning on
-# request.
+# integrity hashes in the lock file verify the npm download. It then
+# provisions the engine binaries aislop shells out to, because 0.14.0
+# dropped the package postinstall hook that used to fetch them and a
+# scan without them silently under-reports. The scan writes a JSON
+# report and a SARIF file, renders a step summary with the bundled
+# parser, and publishes the SARIF to code scanning on request.
 #
 # The scan step never fails the job on findings: the exit-code output
 # carries the aislop gate result so callers decide enforcement. The
@@ -61,6 +63,15 @@ inputs:
     description: 'Upload the SARIF to code scanning from within this action.'
     required: false
     default: 'false'
+  require-engines:
+    description: >-
+      Fail when the required engine binaries (ruff, golangci-lint)
+      cannot be provisioned: 'true' or 'false'. Without them aislop
+      reports no Python or Go findings yet still returns a score, so
+      the default fails rather than publish a silently partial scan.
+      Set 'false' to accept reduced coverage with a warning.
+    required: false
+    default: 'true'
   summary-repository:
     description: >-
       owner/repo label for step-summary links; defaults to the
@@ -94,6 +105,13 @@ outputs:
       Exit code of the aislop quality gate: '0' when the gate passes,
       non-zero when it holds findings below the configured threshold.
     value: ${{ steps.scan.outputs.exit-code }}
+  engines-ready:
+    description: >-
+      'true' when both required engine binaries (ruff, golangci-lint)
+      are present, 'false' when one is missing and require-engines
+      allowed the scan to continue with reduced coverage. Does not
+      cover the optional .NET analyzers.
+    value: ${{ steps.engines.outputs.ready }}
 
 runs:
   using: 'composite'
@@ -140,9 +158,8 @@ runs:
         set -euo pipefail
         # Install under a randomised temporary directory so node_modules
         # never lands in the audited workspace; the cleanup step removes
-        # the whole directory. The package postinstall step fetches the
-        # bundled engine binaries (for example ruff and golangci-lint)
-        # from GitHub releases.
+        # the whole directory. This installs the CLI only: the engine
+        # binaries it shells out to arrive in the next step.
         work="$(mktemp -d "${RUNNER_TEMP}/aislop.XXXXXX")"
         echo "workdir=${work}" >> "$GITHUB_OUTPUT"
         if [ "${LOCKED}" = 'true' ]; then
@@ -162,6 +179,92 @@ runs:
         fi
         echo "aislop=${bin}" >> "$GITHUB_OUTPUT"
         "${bin}" -V
+
+    - name: 'Provision engine binaries'
+      id: 'engines'
+      shell: 'bash'
+      env:
+        AISLOP_NO_TELEMETRY: '1'
+        WORKDIR: ${{ steps.install.outputs.workdir }}
+        REQUIRE: ${{ inputs.require-engines }}
+      run: |
+        set -euo pipefail
+        case "${REQUIRE}" in
+          true|false) ;;
+          *)
+            echo "error: invalid require-engines '${REQUIRE}';" \
+                 "expected 'true' or 'false'" >&2
+            exit 1
+            ;;
+        esac
+        # aislop delegates its Python engines to ruff and its Go engines
+        # to golangci-lint. Releases before 0.14.0 fetched both from a
+        # package postinstall hook; 0.14.0 dropped that hook and moved
+        # the work into an explicit aislop-tools entry point, so a bare
+        # `npm ci` now leaves both binaries absent. aislop then reports
+        # zero findings for those languages while still emitting a
+        # score, which reads as a clean repository rather than an
+        # incomplete scan.
+        tools="${WORKDIR}/node_modules/.bin/aislop-tools"
+        if [ -x "${tools}" ]; then
+          # aislop-tools exits non-zero when ANY bundled tool fails,
+          # including the optional .NET analyzers it pulls from
+          # api.nuget.org, even when ruff and golangci-lint installed
+          # cleanly. Its exit code cannot separate a partial failure
+          # from a total one, so record it and verify by outcome.
+          rc=0
+          (cd "${WORKDIR}" && "${tools}") || rc=$?
+          if [ "${rc}" -ne 0 ]; then
+            echo "aislop-tools exit code: ${rc};" \
+                 'verifying the required binaries by outcome'
+          fi
+        else
+          # An aislop-version override can select a pre-0.14.0 release,
+          # which provisions the binaries from its postinstall hook and
+          # ships no aislop-tools entry point. Fall through to the same
+          # outcome check rather than failing on the missing installer.
+          echo 'aislop-tools absent; relying on the package postinstall'
+        fi
+        engine_bin="${WORKDIR}/node_modules/aislop/tools/bin"
+        # A system installation counts: aislop resolves ruff and
+        # golangci-lint from the PATH as well as from its bundled
+        # copies, so a runner that preinstalls them has full coverage
+        # even when the download failed.
+        missing=''
+        langs=''
+        for tool in ruff golangci-lint; do
+          case "${tool}" in
+            ruff) lang='Python' ;;
+            *) lang='Go' ;;
+          esac
+          if [ -x "${engine_bin}/${tool}" ]; then
+            echo "engine binary ready: ${tool} (${lang}, bundled)"
+          elif command -v "${tool}" > /dev/null 2>&1; then
+            echo "engine binary ready: ${tool} (${lang}, system)"
+          else
+            missing="${missing:+${missing}, }${tool}"
+            langs="${langs:+${langs} and }${lang}"
+          fi
+        done
+        if [ -z "${missing}" ]; then
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo 'ready=false' >> "$GITHUB_OUTPUT"
+        # Name only the languages the missing binaries actually cover:
+        # a failed ruff download leaves the Go engines intact.
+        note="aislop engine binaries missing: ${missing}. ${langs}"
+        note="${note} findings will be under-reported and the score"
+        note="${note} inflated. Allow egress to github.com and"
+        note="${note} release-assets.githubusercontent.com, install the"
+        note="${note} tools on the runner, or set require-engines:"
+        note="${note} 'false' to accept the gap."
+        if [ "${REQUIRE}" = 'false' ]; then
+          echo "::warning::${note}"
+        else
+          echo "::error::${note}"
+          exit 1
+        fi
 
     - name: 'Run aislop scan (advisory)'
       id: 'scan'

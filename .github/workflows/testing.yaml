@@ -80,6 +80,7 @@ jobs:
           SARIF: ${{ steps.scan.outputs.sarif-file }}
           SCORE: ${{ steps.scan.outputs.score }}
           EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
+          ENGINES_READY: ${{ steps.scan.outputs.engines-ready }}
         run: |
           # Verify action outputs
           set -euo pipefail
@@ -89,3 +90,14 @@ jobs:
           echo "sarif: ${SARIF}"
           echo "score: ${SCORE:-<not scoreable>}"
           echo "gate exit code: ${EXIT_CODE}"
+          echo "engines ready: ${ENGINES_READY}"
+          # Guard the regression this action was built around: without
+          # the engine binaries aislop silently skips its Python and Go
+          # engines and still returns a score. Assert on provisioning
+          # rather than on the report's per-engine skip flags, which
+          # also read "skipped" when the scan scope simply holds no
+          # files of that language (routine in changes mode).
+          if [ "${ENGINES_READY}" != 'true' ]; then
+            echo 'error: engine binaries were not provisioned' >&2
+            exit 1
+          fi
