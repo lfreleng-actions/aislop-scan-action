@@ -8,6 +8,6 @@
     "node": ">=22.13.0"
   },
   "dependencies": {
-    "aislop": "0.14.1"
+    "aislop": "0.15.0"
   }
 }
