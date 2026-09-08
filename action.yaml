@@ -18,6 +18,10 @@
 # The scan step never fails the job on findings: the exit-code output
 # carries the aislop gate result so callers decide enforcement. The
 # action fails when the tool itself breaks (no readable JSON report).
+# A scan that ran but with reduced coverage (an engine binary missing,
+# a dependency audit that timed out) is neither: it succeeds, reports
+# coverage-degraded 'true', and warns, so callers can tell an
+# infrastructure problem from a finding against the code.
 #
 # The caller is responsible for checking out the repository under
 # audit (with fetch-depth: 0 when scan-mode is "changes" and base
@@ -112,6 +116,22 @@ outputs:
       allowed the scan to continue with reduced coverage. Does not
       cover the optional .NET analyzers.
     value: ${{ steps.engines.outputs.ready }}
+  coverage-degraded:
+    description: >-
+      'true' when the scan ran with reduced coverage, so its score is
+      inflated and a clean result is not conclusive: an engine binary
+      was missing (engines-ready 'false') or aislop reported an
+      advisory-tier diagnostic such as a dependency audit that timed
+      out against the registry. 'false' when coverage was complete.
+    value: ${{ steps.scan.outputs.coverage-degraded }}
+  advisory-findings:
+    description: >-
+      Number of advisory-tier diagnostics in the report. aislop uses
+      this tier for visibility loss (an audit or analyzer that could
+      not run) rather than for defects in the scanned code, so these
+      usually point at registry load or egress problems, not at the
+      pull request.
+    value: ${{ steps.scan.outputs.advisory-findings }}
 
 runs:
   using: 'composite'
@@ -277,6 +297,7 @@ runs:
         BASE: ${{ inputs.base }}
         WORKDIR: ${{ inputs.working-directory }}
         EXTRA_ARGS: ${{ inputs.extra-args }}
+        ENGINES_READY: ${{ steps.engines.outputs.ready }}
       run: |
         set -euo pipefail
         case "${SCAN_MODE}" in
@@ -323,12 +344,32 @@ runs:
         jq -e . "${report}" > /dev/null
         jq -e . "${sarif}" > /dev/null
         score="$(jq -r '.score // empty' "${report}")"
+        # aislop marks diagnostics that record visibility loss rather
+        # than a defect (a dependency audit that timed out against the
+        # registry, analyzer chunks it could not run) with an advisory
+        # score-impact tier. They are infrastructure signals: a gate
+        # that counts them as findings blames the pull request for a
+        # registry outage. Count them separately so callers can flag
+        # the run as degraded instead, and fold in a missing engine
+        # binary, which is the same kind of gap. The summary step
+        # partitions on the same tier and raises the job-level warning
+        # with the underlying error; keep the two in step.
+        advisory="$(jq '[.diagnostics[]?
+                        | select(.scoreImpact.tier == "advisory")]
+                        | length' "${report}")"
+        degraded='false'
+        if [ "${advisory}" != '0' ] || [ "${ENGINES_READY}" != 'true' ]; then
+          degraded='true'
+        fi
+        echo "advisory diagnostics: ${advisory}; coverage degraded: ${degraded}"
         {
           echo "report=${report}"
           echo "sarif=${sarif}"
           echo "score=${score}"
           echo "exit-code=${rc}"
           echo "scope=${scope}"
+          echo "coverage-degraded=${degraded}"
+          echo "advisory-findings=${advisory}"
         } >> "$GITHUB_OUTPUT"
 
     - name: 'Render step summary'
