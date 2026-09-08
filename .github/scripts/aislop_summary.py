@@ -8,6 +8,10 @@ a compact listing to stdout and, when annotations are enabled,
 ``::warning``/``::error``/``::notice`` workflow commands for the top
 findings so they surface as inline PR annotations.
 
+Diagnostics in aislop's ``advisory`` score-impact tier record reduced
+coverage, not a defect; ``aislop_coverage`` renders them separately
+and keeps them out of the finding counts.
+
 Configuration comes from the environment:
 
 * ``AISLOP_JSON``     path to the aislop JSON report (required)
@@ -26,6 +30,9 @@ from posixpath import basename
 from typing import Any
 from urllib.parse import quote
 
+import aislop_coverage
+from wf_commands import escape_wf_data, escape_wf_property
+
 LEVEL_LABEL = {
     "error": "\u26d4 Error",
     "warning": "\u26a0\ufe0f Warning",
@@ -36,26 +43,6 @@ WARN_CMD = {"error": "error", "warning": "warning", "info": "notice"}
 MAX_MSG_LEN = 200
 
 Finding = dict[str, Any]
-
-
-def _escape_wf_data(value: object) -> str:
-    """Escape the message body of a GitHub workflow command.
-
-    Per GitHub's workflow-command rules, ``%``, ``CR`` and ``LF`` must
-    be percent-encoded in the data (post-``::``) portion.
-    """
-    return str(value).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-
-
-def _escape_wf_property(value: object) -> str:
-    """Escape a property value of a GitHub workflow command.
-
-    Properties live in the comma-separated ``key=value`` list before
-    ``::``. In addition to the data-escapes, ``,`` and ``:`` must be
-    encoded so they cannot terminate the property list or the command
-    prefix.
-    """
-    return _escape_wf_data(value).replace(":", "%3A").replace(",", "%2C")
 
 
 def _render_link(file: str, line: int | None, repo: str, sha: str, server: str) -> str:
@@ -88,7 +75,8 @@ def _normalise(data: dict[str, Any]) -> list[Finding]:
 
     aislop reports ``line: 0`` for whole-file findings; normalise that
     to ``None`` so summaries and annotations omit the meaningless
-    location.
+    location. The score-impact tier is kept to partition advisory
+    (coverage) diagnostics from findings.
     """
     findings: list[Finding] = []
     diags = data.get("diagnostics")
@@ -104,14 +92,18 @@ def _normalise(data: dict[str, Any]) -> list[Finding]:
                 line = int(raw_line) or None
             except (TypeError, ValueError):
                 line = None
+        impact = diag.get("scoreImpact")
+        tier = impact.get("tier") if isinstance(impact, dict) else None
         findings.append(
             {
                 "engine": diag.get("engine", "?"),
                 "rule": diag.get("rule", "?"),
                 "level": diag.get("severity", "warning"),
                 "msg": str(diag.get("message", "")).strip(),
+                "help": str(diag.get("help") or "").strip(),
                 "file": diag.get("filePath", ""),
                 "line": line,
+                "tier": tier,
             }
         )
 
@@ -190,7 +182,9 @@ def _read_context() -> dict[str, Any]:
     }
 
 
-def _render_header(data: dict[str, Any], total: int, ctx: dict[str, Any]) -> list[str]:
+def _render_header(
+    data: dict[str, Any], total: int, coverage_count: int, ctx: dict[str, Any]
+) -> list[str]:
     """Render the score line, scan context, and finding totals."""
     counts = data.get("summary")
     if not isinstance(counts, dict):
@@ -208,8 +202,13 @@ def _render_header(data: dict[str, Any], total: int, ctx: dict[str, Any]) -> lis
         out.append(f"scope: {ctx['scope']}")
     out.append(f"cli: `aislop {data.get('cliVersion', '?')}`")
     out.append("")
-    if total == 0:
+    if total == 0 and coverage_count == 0:
         out.append("No findings \u2705")
+    elif total == 0:
+        out.append(
+            "No findings, but the scan ran with reduced coverage \u26a0\ufe0f"
+            " (see Coverage below)"
+        )
     else:
         out.append(
             f"{total} finding(s): "
@@ -280,6 +279,7 @@ def _render_findings_table(findings: list[Finding], ctx: dict[str, Any]) -> list
 def _print_console(
     data: dict[str, Any],
     findings: list[Finding],
+    coverage: list[Finding],
     level_counts: Counter[str],
     rule_counts: Counter[str],
     top_n: int,
@@ -290,12 +290,16 @@ def _print_console(
     print(
         f"Score: {data.get('score')}  label: {data.get('label', '')}  "
         f"total: {len(findings)}  by-level: {by_level}  "
-        f"rules: {len(rule_counts)}"
+        f"rules: {len(rule_counts)}  coverage notices: {len(coverage)}"
     )
     for f in findings[:top_n]:
         lvl_label = LEVEL_LABEL.get(f["level"], f["level"])
         loc_str = f["file"] + (f":{f['line']}" if f["line"] else "")
         print(f"  {lvl_label}  {f['rule']:<28}  {loc_str}")
+    for item in coverage:
+        print(
+            f"  \u26a0\ufe0f coverage  {item['rule']:<28}  {aislop_coverage.detail(item)}"
+        )
     print("::endgroup::")
 
 
@@ -311,13 +315,13 @@ def _emit_annotations(findings: list[Finding], top_n: int) -> None:
         cmd = WARN_CMD.get(f["level"], "warning")
         parts = []
         if f["file"]:
-            parts.append(f"file={_escape_wf_property(f['file'])}")
+            parts.append(f"file={escape_wf_property(f['file'])}")
         if f["line"]:
             parts.append(f"line={f['line']}")
         ann_title = f"aislop: {f['rule']}"
-        parts.append(f"title={_escape_wf_property(ann_title)}")
+        parts.append(f"title={escape_wf_property(ann_title)}")
         msg = f["msg"].replace("\n", " ").strip() or f["rule"]
-        print(f"::{cmd} {','.join(parts)}::{_escape_wf_data(msg)}")
+        print(f"::{cmd} {','.join(parts)}::{escape_wf_data(msg)}")
 
 
 def _write(lines: list[str], summary_path: str | None) -> None:
@@ -345,19 +349,21 @@ def summarise() -> int:
         print("aislop summary: no readable JSON report")
         return 0
 
-    findings = _normalise(data)
+    findings, coverage = aislop_coverage.partition(_normalise(data))
     total = len(findings)
     level_counts: Counter[str] = Counter(f["level"] for f in findings)
     rule_counts: Counter[str] = Counter(f["rule"] for f in findings)
 
-    out.extend(_render_header(data, total, ctx))
+    out.extend(_render_header(data, total, len(coverage), ctx))
+    out.extend(aislop_coverage.render(coverage))
     out.extend(_render_engines(data))
     if total > 0:
         out.extend(_render_breakdowns(level_counts, rule_counts))
         out.extend(_render_findings_table(findings, ctx))
     _write(out, ctx["summary_path"])
 
-    _print_console(data, findings, level_counts, rule_counts, ctx["top_n"])
+    _print_console(data, findings, coverage, level_counts, rule_counts, ctx["top_n"])
+    aislop_coverage.emit_warnings(coverage)
     if ctx["annotate"]:
         _emit_annotations(findings, ctx["top_n"])
     return 0

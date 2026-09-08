@@ -81,6 +81,8 @@ jobs:
           SCORE: ${{ steps.scan.outputs.score }}
           EXIT_CODE: ${{ steps.scan.outputs.exit-code }}
           ENGINES_READY: ${{ steps.scan.outputs.engines-ready }}
+          COVERAGE_DEGRADED: ${{ steps.scan.outputs.coverage-degraded }}
+          ADVISORY_FINDINGS: ${{ steps.scan.outputs.advisory-findings }}
         run: |
           # Verify action outputs
           set -euo pipefail
@@ -91,6 +93,8 @@ jobs:
           echo "score: ${SCORE:-<not scoreable>}"
           echo "gate exit code: ${EXIT_CODE}"
           echo "engines ready: ${ENGINES_READY}"
+          echo "coverage degraded: ${COVERAGE_DEGRADED}"
+          echo "advisory findings: ${ADVISORY_FINDINGS}"
           # Guard the regression this action was built around: without
           # the engine binaries aislop silently skips its Python and Go
           # engines and still returns a score. Assert on provisioning
@@ -99,5 +103,37 @@ jobs:
           # files of that language (routine in changes mode).
           if [ "${ENGINES_READY}" != 'true' ]; then
             echo 'error: engine binaries were not provisioned' >&2
+            exit 1
+          fi
+          # The coverage outputs must always be set and well formed;
+          # whether coverage was actually degraded depends on the npm
+          # registry answering the dependency audit in time, which is
+          # not this repository's to assert on.
+          case "${COVERAGE_DEGRADED}" in
+            true|false) ;;
+            *)
+              echo "error: coverage-degraded is '${COVERAGE_DEGRADED}';" \
+                   "expected 'true' or 'false'" >&2
+              exit 1
+              ;;
+          esac
+          if ! [[ "${ADVISORY_FINDINGS}" =~ ^[0-9]+$ ]]; then
+            echo "error: advisory-findings is '${ADVISORY_FINDINGS}';" \
+                 'expected a non-negative integer' >&2
+            exit 1
+          fi
+          # The two outputs must agree: with the engines provisioned
+          # (asserted above) coverage is degraded exactly when aislop
+          # reported an advisory diagnostic.
+          if [ "${ADVISORY_FINDINGS}" = '0' ] \
+             && [ "${COVERAGE_DEGRADED}" != 'false' ]; then
+            echo 'error: coverage-degraded is true with no advisory' \
+                 'findings' >&2
+            exit 1
+          fi
+          if [ "${ADVISORY_FINDINGS}" != '0' ] \
+             && [ "${COVERAGE_DEGRADED}" != 'true' ]; then
+            echo 'error: coverage-degraded is false despite advisory' \
+                 'findings' >&2
             exit 1
           fi
