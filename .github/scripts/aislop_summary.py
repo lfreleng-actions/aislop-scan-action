@@ -8,9 +8,9 @@ a compact listing to stdout and, when annotations are enabled,
 ``::warning``/``::error``/``::notice`` workflow commands for the top
 findings so they surface as inline PR annotations.
 
-Diagnostics in aislop's ``advisory`` score-impact tier record reduced
-coverage, not a defect; ``aislop_coverage`` renders them separately
-and keeps them out of the finding counts.
+Diagnostics that record reduced coverage rather than a defect are
+rendered separately by ``aislop_coverage`` and kept out of the
+finding counts.
 
 Configuration comes from the environment:
 
@@ -18,6 +18,7 @@ Configuration comes from the environment:
 * ``AISLOP_TOP_N``    max findings to detail and annotate (default 10)
 * ``AISLOP_SCOPE``    scope label shown in the summary header
 * ``AISLOP_ANNOTATE`` emit workflow-command annotations when ``true``
+* ``AISLOP_ENGINES_READY`` ``false`` when an engine binary is missing
 """
 
 import json
@@ -75,8 +76,7 @@ def _normalise(data: dict[str, Any]) -> list[Finding]:
 
     aislop reports ``line: 0`` for whole-file findings; normalise that
     to ``None`` so summaries and annotations omit the meaningless
-    location. The score-impact tier is kept to partition advisory
-    (coverage) diagnostics from findings.
+    location.
     """
     findings: list[Finding] = []
     diags = data.get("diagnostics")
@@ -92,8 +92,6 @@ def _normalise(data: dict[str, Any]) -> list[Finding]:
                 line = int(raw_line) or None
             except (TypeError, ValueError):
                 line = None
-        impact = diag.get("scoreImpact")
-        tier = impact.get("tier") if isinstance(impact, dict) else None
         findings.append(
             {
                 "engine": diag.get("engine", "?"),
@@ -103,7 +101,6 @@ def _normalise(data: dict[str, Any]) -> list[Finding]:
                 "help": str(diag.get("help") or "").strip(),
                 "file": diag.get("filePath", ""),
                 "line": line,
-                "tier": tier,
             }
         )
 
@@ -174,6 +171,9 @@ def _read_context() -> dict[str, Any]:
         "top_n": _int_env("AISLOP_TOP_N", 10),
         "scope": os.environ.get("AISLOP_SCOPE", ""),
         "annotate": os.environ.get("AISLOP_ANNOTATE", "") == "true",
+        # Unset means the caller did not run the provisioning step;
+        # only an explicit 'false' marks the engines as missing.
+        "engines_ready": os.environ.get("AISLOP_ENGINES_READY", "true") != "false",
         "summary_path": os.environ.get("GITHUB_STEP_SUMMARY"),
         "server": os.environ.get("GITHUB_SERVER_URL", "https://github.com"),
         "repo": repo_override or os.environ.get("GITHUB_REPOSITORY", ""),
@@ -183,7 +183,7 @@ def _read_context() -> dict[str, Any]:
 
 
 def _render_header(
-    data: dict[str, Any], total: int, coverage_count: int, ctx: dict[str, Any]
+    data: dict[str, Any], total: int, degraded: bool, ctx: dict[str, Any]
 ) -> list[str]:
     """Render the score line, scan context, and finding totals."""
     counts = data.get("summary")
@@ -202,7 +202,7 @@ def _render_header(
         out.append(f"scope: {ctx['scope']}")
     out.append(f"cli: `aislop {data.get('cliVersion', '?')}`")
     out.append("")
-    if total == 0 and coverage_count == 0:
+    if total == 0 and not degraded:
         out.append("No findings \u2705")
     elif total == 0:
         out.append(
@@ -221,17 +221,25 @@ def _render_header(
     return out
 
 
-def _render_engines(data: dict[str, Any]) -> list[str]:
-    """Render the per-engine issue and skip table."""
+def _render_engines(data: dict[str, Any], coverage: list[Finding]) -> list[str]:
+    """Render the per-engine issue and skip table.
+
+    aislop's per-engine issue counts include coverage notices, so
+    subtract them by engine; otherwise a run reading "No findings"
+    would still show one Security issue.
+    """
     engines = data.get("engines")
     if not isinstance(engines, dict) or not engines:
         return []
+    notices: Counter[str] = Counter(item["engine"] for item in coverage)
     out = ["## Engines", "", "| Engine | Issues | Skipped |"]
     out.append("| --- | ---: | --- |")
     for name, eng in engines.items():
         if not isinstance(eng, dict):
             eng = {}
         issues = eng.get("issues", 0)
+        if isinstance(issues, int):
+            issues = max(issues - notices.get(name, 0), 0)
         skipped = "yes" if eng.get("skipped") else "no"
         out.append(f"| `{name}` | {issues} | {skipped} |")
     out.append("")
@@ -350,13 +358,14 @@ def summarise() -> int:
         return 0
 
     findings, coverage = aislop_coverage.partition(_normalise(data))
+    degraded = bool(coverage) or not ctx["engines_ready"]
     total = len(findings)
     level_counts: Counter[str] = Counter(f["level"] for f in findings)
     rule_counts: Counter[str] = Counter(f["rule"] for f in findings)
 
-    out.extend(_render_header(data, total, len(coverage), ctx))
-    out.extend(aislop_coverage.render(coverage))
-    out.extend(_render_engines(data))
+    out.extend(_render_header(data, total, degraded, ctx))
+    out.extend(aislop_coverage.render(coverage, ctx["engines_ready"]))
+    out.extend(_render_engines(data, coverage))
     if total > 0:
         out.extend(_render_breakdowns(level_counts, rule_counts))
         out.extend(_render_findings_table(findings, ctx))
