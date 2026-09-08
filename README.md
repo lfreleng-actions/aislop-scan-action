@@ -198,19 +198,24 @@ stays honest about what it did not check.
 
 That diagnostic is not a finding against the code, and treating it as
 one turns a registry outage into a failed pull request check with a
-message that blames the change. aislop marks such diagnostics with an
-`advisory` score-impact tier ("visibility loss, not evidence of a
-vulnerability"), alongside the analogous `dotnet/projects-skipped` and
-`cppcheck/chunks-skipped`. The action keys off that tier rather than
-off rule names, so it treats new coverage diagnostics the same way:
+message that blames the change. The action recognises three such
+**coverage notices** by rule: `security/dependency-audit-skipped`,
+`dotnet/projects-skipped` and `cppcheck/chunks-skipped`, each of
+which aislop itself describes as "visibility loss, not evidence of a
+defect". The list is explicit because aislop's `advisory` score-impact
+tier, which these share, also holds ordinary style findings such as
+`ai-slop/generic-naming`; keying off the tier would hide real
+findings. The list lives in `.github/scripts/aislop_coverage.py`, and
+the action treats the notices as follows:
 
 - The step summary lists them in a **Coverage** section, separate from
   the finding counts and tables, and the headline reads "No findings, but
-  the scan ran with reduced coverage" rather than a clean pass.
-- Each one raises a job-level `::warning::` titled
+  the scan ran with reduced coverage" rather than a clean pass. A
+  missing engine binary appears in the same section.
+- Each notice raises a job-level `::warning::` titled
   `aislop: scan coverage degraded`, even with `annotate` off,
   because it describes the run rather than a line of code.
-- The `advisory-findings` output carries the count, and
+- The `advisory-findings` output carries the notice count, and
   `coverage-degraded` reads `true` when that count is non-zero or
   when `engines-ready` is `false`.
 
@@ -244,15 +249,15 @@ audit time out routinely can raise `security.auditTimeout`
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                | Description                                                                                                                  |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `sarif-file`        | Absolute path to the generated SARIF file.                                                                                   |
-| `report-file`       | Absolute path to the generated JSON report.                                                                                  |
-| `score`             | aislop score (0–100); empty when the scope holds no supported files.                                                         |
-| `exit-code`         | aislop quality-gate exit code: `0` passed, non-zero when the gate failed.                                                    |
-| `engines-ready`     | `true` when `ruff` and `golangci-lint` are both present; `false` when one is missing.                                        |
-| `coverage-degraded` | `true` when the scan ran with reduced coverage (missing engine or advisory diagnostic); see [Scan coverage](#scan-coverage). |
-| `advisory-findings` | Number of advisory-tier diagnostics (audits or analyzers that could not run); `0` when coverage was complete.                |
+| Name                | Description                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `sarif-file`        | Absolute path to the generated SARIF file.                                                                               |
+| `report-file`       | Absolute path to the generated JSON report.                                                                              |
+| `score`             | aislop score (0–100); empty when the scope holds no supported files.                                                     |
+| `exit-code`         | aislop quality-gate exit code: `0` passed, non-zero when the gate failed.                                                |
+| `engines-ready`     | `true` when `ruff` and `golangci-lint` are both present; `false` when one is missing.                                    |
+| `coverage-degraded` | `true` when the scan ran with reduced coverage (missing engine or coverage notice); see [Scan coverage](#scan-coverage). |
+| `advisory-findings` | Number of coverage notices (audits or analyzers that could not run); `0` when coverage was complete.                     |
 
 <!-- markdownlint-enable MD013 -->
 
