@@ -175,7 +175,7 @@ coverage.
 | `scan-mode`          | `changes` | Scan scope: `changes` audits files changed relative to `base`; `full` audits everything.      |
 | `base`               | `""`      | Git ref changes compare against (for example `origin/main`). Empty compares to HEAD.          |
 | `working-directory`  | `.`       | Path within the workspace to scan.                                                            |
-| `aislop-version`     | `""`      | Override the bundled pin (for example `0.14.1`). Bypasses the bundled lock file.              |
+| `aislop-version`     | `""`      | Override the bundled pin (for example `0.16.0`). Bypasses the bundled lock file.              |
 | `extra-args`         | `""`      | Extra raw arguments appended to the aislop call.                                              |
 | `annotate`           | `'true'`  | Emit inline annotations for the top findings: `'true'` or `'false'`.                          |
 | `upload-sarif`       | `'false'` | Publish SARIF to code scanning from the action: `'true'` or `'false'`.                        |
