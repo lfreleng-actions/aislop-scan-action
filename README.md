@@ -99,6 +99,22 @@ pull request, gate on the `exit-code` output in a follow-up step:
 
 <!-- markdownlint-enable MD013 MD046 -->
 
+A scan can also succeed with reduced coverage, for example when the
+dependency audit times out against the npm registry. The
+`coverage-degraded` output flags that case so a gate can warn rather
+than blame the pull request (see [Scan coverage](#scan-coverage)):
+
+<!-- markdownlint-disable MD013 MD046 -->
+
+```yaml
+      - name: 'Flag reduced coverage'
+        if: steps.scan.outputs.coverage-degraded == 'true'
+        run: |
+          echo '::warning::aislop ran with reduced coverage; re-run once the service recovers'
+```
+
+<!-- markdownlint-enable MD013 MD046 -->
+
 ## How it works
 
 1. The runner checks the action out at the ref a consumer pins. The
@@ -120,7 +136,11 @@ pull request, gate on the `exit-code` output in a follow-up step:
    producing a JSON report and a SARIF file. The gate exit code
    becomes the `exit-code` output rather than failing the job.
 5. The action writes a scored findings summary to the job summary and
-   emits inline annotations for the top findings.
+   emits inline annotations for the top findings. Diagnostics that
+   record reduced coverage rather than a defect go to a separate
+   Coverage section and a job-level warning, and the
+   `coverage-degraded` output flags the run. See
+   [Scan coverage](#scan-coverage).
 6. When `upload-sarif` is `'true'`, the action publishes the SARIF to
    code scanning under the `aislop` category. The example workflows set
    this for default-branch pushes and keep pull request runs advisory.
@@ -166,6 +186,46 @@ languages that binary covers, and the `engines-ready` output reports
 `'false'` to downgrade the failure to a warning and scan with reduced
 coverage.
 
+## Scan coverage
+
+Some of what aislop does depends on services outside the runner. Its
+dependency audit shells out to `npm audit`, which queries the npm
+registry's advisory endpoint with the whole dependency tree; under
+registry load that request can exceed aislop's audit timeout (25 s by
+default). aislop records the gap as a diagnostic
+(`security/dependency-audit-skipped`, severity `info`) so the report
+stays honest about what it did not check.
+
+That diagnostic is not a finding against the code, and treating it as
+one turns a registry outage into a failed pull request check with a
+message that blames the change. The action recognises three such
+**coverage notices** by rule: `security/dependency-audit-skipped`,
+`dotnet/projects-skipped` and `cppcheck/chunks-skipped`, each of
+which aislop itself describes as "visibility loss, not evidence of a
+defect". The list is explicit because aislop's `advisory` score-impact
+tier, which these share, also holds ordinary style findings such as
+`ai-slop/generic-naming`; keying off the tier would hide real
+findings. The list lives in `.github/scripts/aislop_coverage.py`, and
+the action treats the notices as follows:
+
+- The step summary lists them in a **Coverage** section, separate from
+  the finding counts and tables, and the headline reads "No findings, but
+  the scan ran with reduced coverage" rather than a clean pass. A
+  missing engine binary appears in the same section.
+- Each notice raises a job-level `::warning::` titled
+  `aislop: scan coverage degraded`, even with `annotate` off,
+  because it describes the run rather than a line of code.
+- The `advisory-findings` output carries the notice count, and
+  `coverage-degraded` reads `true` when that count is non-zero or
+  when `engines-ready` is `false`.
+
+A gate that means "the pull request adds no findings" should exclude
+these from its count and surface `coverage-degraded` as a warning
+instead; a clean result with reduced coverage is not conclusive, so
+re-run the scan once the service recovers. A repository that sees the
+audit time out routinely can raise `security.auditTimeout`
+(milliseconds) in its `.aislop/config.yml`.
+
 ## Inputs
 
 <!-- markdownlint-disable MD013 -->
@@ -175,7 +235,7 @@ coverage.
 | `scan-mode`          | `changes` | Scan scope: `changes` audits files changed relative to `base`; `full` audits everything.      |
 | `base`               | `""`      | Git ref changes compare against (for example `origin/main`). Empty compares to HEAD.          |
 | `working-directory`  | `.`       | Path within the workspace to scan.                                                            |
-| `aislop-version`     | `""`      | Override the bundled pin (for example `0.14.1`). Bypasses the bundled lock file.              |
+| `aislop-version`     | `""`      | Override the bundled pin (for example `0.16.0`). Bypasses the bundled lock file.              |
 | `extra-args`         | `""`      | Extra raw arguments appended to the aislop call.                                              |
 | `annotate`           | `'true'`  | Emit inline annotations for the top findings: `'true'` or `'false'`.                          |
 | `upload-sarif`       | `'false'` | Publish SARIF to code scanning from the action: `'true'` or `'false'`.                        |
@@ -189,13 +249,15 @@ coverage.
 
 <!-- markdownlint-disable MD013 -->
 
-| Name            | Description                                                                           |
-| --------------- | ------------------------------------------------------------------------------------- |
-| `sarif-file`    | Absolute path to the generated SARIF file.                                            |
-| `report-file`   | Absolute path to the generated JSON report.                                           |
-| `score`         | aislop score (0–100); empty when the scope holds no supported files.                  |
-| `exit-code`     | aislop quality-gate exit code: `0` passed, non-zero when the gate failed.             |
-| `engines-ready` | `true` when `ruff` and `golangci-lint` are both present; `false` when one is missing. |
+| Name                | Description                                                                                                              |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `sarif-file`        | Absolute path to the generated SARIF file.                                                                               |
+| `report-file`       | Absolute path to the generated JSON report.                                                                              |
+| `score`             | aislop score (0–100); empty when the scope holds no supported files.                                                     |
+| `exit-code`         | aislop quality-gate exit code: `0` passed, non-zero when the gate failed.                                                |
+| `engines-ready`     | `true` when `ruff` and `golangci-lint` are both present; `false` when one is missing.                                    |
+| `coverage-degraded` | `true` when the scan ran with reduced coverage (missing engine or coverage notice); see [Scan coverage](#scan-coverage). |
+| `advisory-findings` | Number of coverage notices (audits or analyzers that could not run); `0` when coverage was complete.                     |
 
 <!-- markdownlint-enable MD013 -->
 
