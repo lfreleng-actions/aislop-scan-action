@@ -110,7 +110,7 @@ than blame the pull request (see [Scan coverage](#scan-coverage)):
       - name: 'Flag reduced coverage'
         if: steps.scan.outputs.coverage-degraded == 'true'
         run: |
-          echo '::warning::aislop ran with reduced coverage; re-run once the service recovers'
+          echo '::warning::aislop ran with reduced coverage; see the Coverage section, resolve the cause, then re-run'
 ```
 
 <!-- markdownlint-enable MD013 MD046 -->
@@ -221,10 +221,19 @@ the action treats the notices as follows:
 
 A gate that means "the pull request adds no findings" should exclude
 these from its count and surface `coverage-degraded` as a warning
-instead; a clean result with reduced coverage is not conclusive, so
-re-run the scan once the service recovers. A repository that sees the
-audit time out routinely can raise `security.auditTimeout`
-(milliseconds) in its `.aislop/config.yml`.
+instead; a clean result with reduced coverage is not conclusive.
+
+What to do next depends on the cause, which the Coverage section
+names. A dependency audit that timed out against the npm registry
+clears by itself, so re-running is enough, and a repository that sees
+it time out routinely can raise `security.auditTimeout`
+(milliseconds) in its `.aislop/config.yml`. The others generally do
+not resolve on their own: `dotnet/projects-skipped` wants the
+projects restored or built, `cppcheck/chunks-skipped` wants the
+underlying failure investigated, and a missing engine binary wants
+the tool installed or egress opened (see
+[Engine binaries](#engine-binaries)). Address the reported cause,
+then re-run.
 
 ## Inputs
 

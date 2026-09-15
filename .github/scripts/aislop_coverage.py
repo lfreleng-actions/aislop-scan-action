@@ -37,8 +37,10 @@ WARNING_TITLE = "aislop: scan coverage degraded"
 NOTE = (
     "coverage notice(s): part of the scan could not run, so the score may"
     " be inflated and a clean result is not conclusive. These describe the"
-    " run (registry load, egress, missing tooling), not the code under"
-    " review. Re-run once the underlying service recovers."
+    " run, not the code under review. Some causes clear on their own, such"
+    " as a registry timing out; others need action, such as restoring a"
+    " project or installing a tool. Address the cause shown below, then"
+    " re-run."
 )
 ENGINES_ROW = (
     "A required engine binary (ruff or golangci-lint) was missing, so"
