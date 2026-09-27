@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2026 The Linux Foundation
 
 # Self-test: run this repository's composite action against its own
-# source tree. Uses the local action via './'. Pull requests scan the
+# source tree. Uses the local action via '$/'. Pull requests scan the
 # changed files against the base branch; pushes and manual runs scan
 # the full repository.
 name: "Test GitHub Action 🧪"
@@ -60,7 +60,7 @@ jobs:
 
       - name: "Run aislop scan"
         id: "scan"
-        uses: "./"
+        uses: $/
         with:
           # yamllint disable-line rule:line-length
           scan-mode: ${{ github.event_name == 'pull_request' && 'changes' || 'full' }}
