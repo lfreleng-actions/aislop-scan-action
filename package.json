@@ -9,5 +9,8 @@
   },
   "dependencies": {
     "aislop": "0.16.1"
+  },
+  "overrides": {
+    "ip-address": "^10.5.1"
   }
 }
