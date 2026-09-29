@@ -311,6 +311,12 @@ the CLI makes no telemetry calls at scan time.
 with integrity hashes. Dependabot's `npm` ecosystem watches these files
 and opens a pull request when a new aislop release ships.
 
+`package.json` can also carry npm `overrides`, each setting a floor on
+a transitive dependency with a security fix, so that regenerating the
+lock file cannot resolve below the patched release. Each floor stays
+within the major version its parent accepts. Drop an override once
+every parent requires a patched version itself.
+
 The update flow:
 
 1. aislop publishes a new release.
