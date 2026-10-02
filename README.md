@@ -205,7 +205,7 @@ which aislop itself describes as "visibility loss, not evidence of a
 defect". The list is explicit because aislop's `advisory` score-impact
 tier, which these share, also holds ordinary style findings such as
 `ai-slop/generic-naming`; keying off the tier would hide real
-findings. The list lives in `.github/scripts/aislop_coverage.py`, and
+findings. The list lives in `scripts/aislop_coverage.py`, and
 the action treats the notices as follows:
 
 - The step summary lists them in a **Coverage** section, separate from
