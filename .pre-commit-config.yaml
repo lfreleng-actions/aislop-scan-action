@@ -116,10 +116,20 @@ repos:
       - id: codespell
         exclude: "^package-lock\\.json$"
 
+  # Requires a mirror, primary repo lacks .pre-commit-hooks.yaml
   - repo: https://github.com/DetachHead/basedpyright-prek-mirror
     rev: 706e6acebe9e88c2c28d1527d3085a14b11794c4  # frozen: 1.40.1
     hooks:
       - id: basedpyright
+        # Check the whole scope, not only the staged files.
+        pass_filenames: false
+        # Also run when a commit only deletes Python or changes config.
+        always_run: true
+        # Keep always_run from also running it at commit-msg.
+        stages: [pre-commit]
+        # Fail on warnings too; the directory matches include in
+        # pyproject.toml.
+        args: [--warnings, scripts]
 
   - repo: https://github.com/lfreleng-actions/gha-workflow-linter
     rev: 0c582e431022f1c7004196fb4ea32744d1fe4843  # frozen: v1.7.0

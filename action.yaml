@@ -355,7 +355,7 @@ runs:
         # degraded instead, and fold in a missing engine binary, which
         # is the same kind of gap. The rule list lives in the coverage
         # module so the count and the summary cannot disagree.
-        coverage="${ACTION_PATH}/.github/scripts/aislop_coverage.py"
+        coverage="${ACTION_PATH}/scripts/aislop_coverage.py"
         advisory="$(python3 "${coverage}" count "${report}")"
         degraded='false'
         if [ "${advisory}" != '0' ] || [ "${ENGINES_READY}" != 'true' ]; then
@@ -386,7 +386,7 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        python3 "${ACTION_PATH}/.github/scripts/aislop_summary.py"
+        python3 "${ACTION_PATH}/scripts/aislop_summary.py"
 
     - name: 'Upload SARIF to code scanning'
       if: >-
