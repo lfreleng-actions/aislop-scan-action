@@ -8,7 +8,7 @@
     "node": ">=22.13.0"
   },
   "dependencies": {
-    "aislop": "0.16.1"
+    "aislop": "0.18.0"
   },
   "overrides": {
     "ip-address": "^10.5.1"
