@@ -20,6 +20,12 @@
 # `line-length` and `target-version` are intentionally left unset so
 # ruff's own defaults continue to apply unchanged.
 
+# The fixture trees are deliberately defective scan input for the SARIF
+# golden test. force-exclude keeps the exclusion when pre-commit names
+# the files explicitly.
+extend-exclude = ["tests/fixtures"]
+force-exclude = true
+
 [lint]
 # The de-facto standard across this organisation: present as a superset
 # in 13 of the 16 repositories that already pin their rules.

@@ -3,6 +3,18 @@
 
 # Tool configuration only; this repository is not a Python package.
 
+# Test-only tooling: `uv run --group dev pytest` runs the suite.
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The fixture trees are scan input, never test modules.
+norecursedirs = ["fixtures"]
+# The tests import the scripts as top-level modules, as action.yaml
+# runs them.
+pythonpath = ["scripts"]
+
 [tool.basedpyright]
 # action.yaml runs the scripts with the runner's preinstalled python3.
 # 3.10 is the distro python3 on ubuntu-22.04, the oldest GitHub-hosted
