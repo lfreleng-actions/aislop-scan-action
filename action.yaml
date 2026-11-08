@@ -11,9 +11,10 @@
 # integrity hashes in the lock file verify the npm download. It then
 # provisions the engine binaries aislop shells out to, because 0.14.0
 # dropped the package postinstall hook that used to fetch them and a
-# scan without them silently under-reports. The scan writes a JSON
-# report and a SARIF file, renders a step summary with the bundled
-# parser, and publishes the SARIF to code scanning on request.
+# scan without them silently under-reports. A single scan writes a
+# JSON report, the bundled converter derives the SARIF file from it,
+# the bundled parser renders a step summary, and the action publishes
+# the SARIF to code scanning on request.
 #
 # The scan step never fails the job on findings: the exit-code output
 # carries the aislop gate result so callers decide enforcement. The
@@ -55,7 +56,10 @@ inputs:
     required: false
     default: ''
   extra-args:
-    description: 'Additional raw arguments appended to the aislop call.'
+    description: >-
+      Additional raw arguments appended to the aislop call. The action
+      selects the output format itself, so --sarif and --format are
+      rejected.
     required: false
     default: ''
   annotate:
@@ -310,6 +314,21 @@ runs:
             exit 1
             ;;
         esac
+        # The action runs aislop once for a JSON report and derives the
+        # SARIF from it, so an output-format flag would leave both
+        # without a report to read.
+        # Word-splitting of EXTRA_ARGS is intentional (passthrough).
+        # shellcheck disable=SC2086
+        for arg in ${EXTRA_ARGS}; do
+          case "${arg}" in
+            --sarif|--format|--format=*)
+              echo "::error::extra-args must not set the output format" \
+                   "('${arg}'): the action writes the JSON report and" \
+                   'derives the SARIF from it'
+              exit 1
+              ;;
+          esac
+        done
         args=(ci)
         scope='full repository'
         if [ "${SCAN_MODE}" = 'changes' ]; then
@@ -327,23 +346,24 @@ runs:
         report="${out}/aislop-report.json"
         sarif="${out}/aislop.sarif"
         # aislop exits non-zero when its quality gate fails; capture the
-        # exit code and leave pass/fail policy to the caller. The second
-        # run reuses the installed CLI, so the SARIF costs only a rescan
-        # of the same working tree.
+        # exit code and leave pass/fail policy to the caller.
         # Word-splitting of EXTRA_ARGS is intentional (passthrough).
         # shellcheck disable=SC2086
         rc=0
         (cd "${WORKDIR}" \
           && "${AISLOP_BIN}" "${args[@]}" ${EXTRA_ARGS} > "${report}") \
           || rc=$?
-        # shellcheck disable=SC2086
-        (cd "${WORKDIR}" \
-          && "${AISLOP_BIN}" "${args[@]}" --sarif ${EXTRA_ARGS} \
-          > "${sarif}") || true
         echo "aislop exit code: ${rc}"
-        # Both outputs must be valid JSON; anything else means the tool
+        # The report must be valid JSON; anything else means the tool
         # itself failed rather than reported findings.
         jq -e . "${report}" > /dev/null
+        # aislop writes one format per run. Deriving the SARIF from the
+        # same report, rather than scanning a second time, keeps the
+        # two from disagreeing (a dependency audit that times out in
+        # only one scan adds or drops a finding). The converter fails,
+        # and writes nothing, on a report it cannot map.
+        python3 "${ACTION_PATH}/scripts/aislop_sarif.py" \
+          "${report}" "${sarif}"
         jq -e . "${sarif}" > /dev/null
         score="$(jq -r '.score // empty' "${report}")"
         # aislop emits a few diagnostics that record visibility loss

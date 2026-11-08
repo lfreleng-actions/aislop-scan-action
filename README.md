@@ -132,9 +132,12 @@ than blame the pull request (see [Scan coverage](#scan-coverage)):
    report nothing, inflating the score. See
    [Engine binaries](#engine-binaries).
 4. aislop scans the changed files (`scan-mode: changes`, compared
-   against `base`) or the full working tree (`scan-mode: full`),
-   producing a JSON report and a SARIF file. The gate exit code
-   becomes the `exit-code` output rather than failing the job.
+   against `base`) or the full working tree (`scan-mode: full`) once,
+   producing a JSON report. The gate exit code becomes the `exit-code`
+   output rather than failing the job. The bundled
+   `scripts/aislop_sarif.py` converter derives the SARIF file from that
+   report, so the two always describe the same scan; see
+   [SARIF conversion](#sarif-conversion).
 5. The action writes a scored findings summary to the job summary and
    emits inline annotations for the top findings. Diagnostics that
    record reduced coverage rather than a defect go to a separate
@@ -245,7 +248,7 @@ then re-run.
 | `base`               | `""`      | Git ref changes compare against (for example `origin/main`). Empty compares to HEAD.          |
 | `working-directory`  | `.`       | Path within the workspace to scan.                                                            |
 | `aislop-version`     | `""`      | Override the bundled pin (for example `0.16.0`). Bypasses the bundled lock file.              |
-| `extra-args`         | `""`      | Extra raw arguments appended to the aislop call.                                              |
+| `extra-args`         | `""`      | Extra raw arguments appended to the aislop call; the action rejects `--sarif` and `--format`. |
 | `annotate`           | `'true'`  | Emit inline annotations for the top findings: `'true'` or `'false'`.                          |
 | `upload-sarif`       | `'false'` | Publish SARIF to code scanning from the action: `'true'` or `'false'`.                        |
 | `require-engines`    | `'true'`  | Fail when `ruff` or `golangci-lint` go missing; `'false'` warns and scans anyway.             |
@@ -304,6 +307,38 @@ Runners with a restrictive egress policy need to allow:
 
 The action sets `AISLOP_NO_TELEMETRY=1` and `AISLOP_NO_HISTORY=1`, so
 the CLI makes no telemetry calls at scan time.
+
+## SARIF conversion
+
+aislop writes one output format per run. Two runs, one for JSON and
+one for SARIF, can disagree: a dependency audit that times out against
+the registry in one run but not the other adds or drops a
+`security/vulnerable-dependency` finding. The action runs aislop once,
+for JSON (the richer format, carrying the score and coverage), and
+converts that report to SARIF 2.1.0 with `scripts/aislop_sarif.py`.
+The SARIF holds every diagnostic, coverage notices included, as
+`aislop ci --sarif` would.
+
+Because the action picks the output format itself, `extra-args`
+rejects `--sarif` and `--format` with an error naming the input.
+
+A report the converter cannot map (unreadable, `diagnostics` not a
+list, a diagnostic without `rule`, `filePath` or `message`) fails the
+scan step, and no partial SARIF file remains.
+
+`tests/test_aislop_sarif.py` scans the fixture trees under
+`tests/fixtures/` with the pinned aislop in both formats and requires
+the converted SARIF to equal aislop's own. The testing workflow runs it
+on every pull request, so an aislop bump that changes its SARIF fails
+there rather than drifting. To run it locally, install the pinned
+aislop and its engine binaries, then point `AISLOP_BIN` at it:
+
+```bash
+AISLOP_BIN=/path/to/node_modules/.bin/aislop uv run --group dev pytest
+```
+
+Without `AISLOP_BIN` the tests look for the pinned version on the
+`PATH` and skip the golden comparison when they do not find it.
 
 ## Version management
 
