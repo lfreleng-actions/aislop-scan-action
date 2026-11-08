@@ -5,7 +5,8 @@
 # Self-test: run this repository's composite action against its own
 # source tree. Uses the local action via '$/'. Pull requests scan the
 # changed files against the base branch; pushes and manual runs scan
-# the full repository.
+# the full repository. A second job runs the unit tests, including the
+# golden comparison of the SARIF converter against the pinned aislop.
 name: "Test GitHub Action 🧪"
 
 # yamllint disable-line rule:truthy
@@ -137,3 +138,77 @@ jobs:
                  'findings' >&2
             exit 1
           fi
+          # The SARIF is derived from the report, so it must be a
+          # SARIF 2.1.0 log of one run holding one result per
+          # diagnostic.
+          if ! jq -e '.version == "2.1.0" and (.runs | length) == 1
+                      and (.runs[0].tool.driver.name == "aislop")
+                      and (.runs[0].results | type) == "array"' \
+               "${SARIF}" > /dev/null; then
+            echo 'error: sarif-file is not a SARIF 2.1.0 aislop log' >&2
+            exit 1
+          fi
+          results="$(jq '.runs[0].results | length' "${SARIF}")"
+          diagnostics="$(jq '.diagnostics | length' "${REPORT}")"
+          if [ "${results}" != "${diagnostics}" ]; then
+            echo "error: sarif-file holds ${results} results;" \
+                 "the report holds ${diagnostics} diagnostics" >&2
+            exit 1
+          fi
+
+  sarif-golden:
+    name: "SARIF converter tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      - name: "Checkout repository"
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Install aislop exactly as action.yaml does: npm ci against the
+      # bundled lock file, then the engine binaries. The golden test
+      # compares against this pinned version, so a Dependabot bump that
+      # changes aislop's SARIF fails here.
+      - name: "Install pinned aislop"
+        shell: "bash"
+        run: |
+          # Install pinned aislop
+          set -euo pipefail
+          work="${RUNNER_TEMP}/aislop"
+          mkdir -p "${work}"
+          cp package.json package-lock.json "${work}/"
+          (cd "${work}" && npm ci --no-audit --no-fund --loglevel=error)
+          # aislop-tools also fails on the optional .NET analyzers; the
+          # check below and the fixture-coverage test judge the result.
+          (cd "${work}" && node_modules/.bin/aislop-tools) || true
+          test -x "${work}/node_modules/aislop/tools/bin/ruff"
+          echo "AISLOP_BIN=${work}/node_modules/.bin/aislop" \
+            >> "$GITHUB_ENV"
+
+      - name: "Run tests"
+        shell: "bash"
+        env:
+          AISLOP_NO_TELEMETRY: "1"
+          AISLOP_NO_HISTORY: "1"
+        run: |
+          # Run tests
+          set -euo pipefail
+          pipx install 'uv==0.13.7'
+          uv run --locked --python 3.12 --group dev pytest -v

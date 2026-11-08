@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: 2026 The Linux Foundation
+
+# Deliberately defective scan input for tests/test_aislop_sarif.py.
+# The golden test scans copies of these trees; the self-scan must not.
+tests/fixtures
