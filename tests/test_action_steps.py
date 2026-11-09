@@ -86,6 +86,34 @@ def outputs(tmp_path: Path) -> dict[str, str]:
     return result
 
 
+def step_env_names(name: str) -> set[str]:
+    """Return the variable names a step declares in its ``env`` block."""
+    lines = ACTION.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if f"- name: '{name}'" in line)
+    names: set[str] = set()
+    in_env = False
+    for line in lines[start + 1 :]:
+        if re.match(r"^    - ", line):
+            break
+        if re.match(r"^      env:\s*$", line):
+            in_env = True
+        elif in_env:
+            match = re.match(r"^        ([A-Z_]+):", line)
+            if match is None:
+                in_env = False
+            else:
+                names.add(match.group(1))
+    return names
+
+
+@pytest.mark.parametrize("name", ["Install aislop", "Provision engine binaries"])
+def test_steps_that_source_the_helper_declare_the_action_path(name: str) -> None:
+    # The harness above supplies ACTION_PATH, so it would hide a step
+    # that forgot to declare it; the runner supplies only what env lists.
+    assert "retry.sh" in step_script(name)
+    assert "ACTION_PATH" in step_env_names(name)
+
+
 # --- Install aislop ------------------------------------------------------
 
 NPM_STUB = """\
@@ -131,7 +159,6 @@ def test_install_runs_npm_once_when_the_registry_answers(tmp_path: Path) -> None
     assert outputs(tmp_path)["aislop"].endswith("node_modules/.bin/aislop")
 
 
-@pytest.mark.xfail(strict=True, reason="the install step does not retry yet")
 def test_install_retries_a_registry_outage(tmp_path: Path) -> None:
     proc = run_install(tmp_path, failures=3)
     assert proc.returncode == 0, proc.stderr
@@ -139,14 +166,12 @@ def test_install_retries_a_registry_outage(tmp_path: Path) -> None:
     assert outputs(tmp_path)["aislop"].endswith("node_modules/.bin/aislop")
 
 
-@pytest.mark.xfail(strict=True, reason="the install step does not retry yet")
 def test_install_gives_up_after_four_retries(tmp_path: Path) -> None:
     proc = run_install(tmp_path, failures=99)
     assert proc.returncode != 0
     assert npm_runs(tmp_path) == 5
 
 
-@pytest.mark.xfail(strict=True, reason="the install step does not retry yet")
 def test_install_retries_the_unlocked_install_too(tmp_path: Path) -> None:
     state = tmp_path / "state"
     state.mkdir()
@@ -229,7 +254,6 @@ def test_a_nonzero_exit_with_both_binaries_present_is_not_retried(
     assert outputs(tmp_path)["ready"] == "true"
 
 
-@pytest.mark.xfail(strict=True, reason="the engine step does not retry yet")
 def test_engines_retry_until_the_binaries_arrive(tmp_path: Path) -> None:
     proc = run_engines(tmp_path, work_from=4)
     assert proc.returncode == 0, proc.stderr
@@ -237,7 +261,6 @@ def test_engines_retry_until_the_binaries_arrive(tmp_path: Path) -> None:
     assert outputs(tmp_path)["ready"] == "true"
 
 
-@pytest.mark.xfail(strict=True, reason="the engine step does not retry yet")
 def test_engines_give_up_after_four_retries_and_fail_when_required(
     tmp_path: Path,
 ) -> None:
@@ -248,7 +271,6 @@ def test_engines_give_up_after_four_retries_and_fail_when_required(
     assert outputs(tmp_path)["ready"] == "false"
 
 
-@pytest.mark.xfail(strict=True, reason="the engine step does not retry yet")
 def test_engines_give_up_after_four_retries_and_warn_when_optional(
     tmp_path: Path,
 ) -> None:

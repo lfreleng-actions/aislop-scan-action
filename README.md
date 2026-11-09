@@ -124,7 +124,9 @@ than blame the pull request (see [Scan coverage](#scan-coverage)):
 2. The action installs the pinned aislop CLI with `npm ci` against its
    bundled `package-lock.json`, so the integrity hashes committed in
    the lock file verify the npm download. The install lands in a
-   temporary directory outside the audited workspace.
+   temporary directory outside the audited workspace. The action
+   retries a transient registry failure (see
+   [Download resilience](#download-resilience)).
 3. The action provisions the engine binaries aislop shells out to —
    `ruff` for Python, `golangci-lint` for Go — with the bundled
    `aislop-tools` installer. aislop 0.14.0 dropped the postinstall
@@ -188,6 +190,33 @@ languages that binary covers, and the `engines-ready` output reports
 .NET analyzers can fail without changing it. Set `require-engines` to
 `'false'` to downgrade the failure to a warning and scan with reduced
 coverage.
+
+## Download resilience
+
+A scheduled scan of an entire organisation installs aislop once per
+repository, so a short outage of the npm registry or of GitHub's release
+CDN can fail a share of the jobs at once. On 9 November an outage of the release
+CDN failed 21 of 129 jobs of the sister zizmor scan. The action retries
+both network steps:
+
+- **`npm ci`** (or `npm install` for an `aislop-version` override)
+  retries a failed install. npm reuses the tarballs it already cached, so
+  a retry fetches what failed.
+- **`aislop-tools`** retries until `ruff` and `golangci-lint` are both
+  present. The installer gives up after three tries about a second
+  apart, so the action wraps it. Rerunning is safe because it skips a
+  tool already installed. The retry judges the outcome rather than the
+  exit code, so a failing optional .NET analyzer download never triggers
+  one.
+
+The schedule is the same for both: at most four retries, waiting about
+10, 20, 40 and 80 seconds, each wait cut by up to a quarter at random so
+that parallel jobs do not retry in step. The action stops retrying once
+the next wait would take a step past 180 seconds. `scripts/retry.sh`
+implements the schedule.
+
+When retries fail, the action behaves as before: a failed install fails
+the step, and missing engine binaries follow `require-engines`.
 
 ## Scan coverage
 

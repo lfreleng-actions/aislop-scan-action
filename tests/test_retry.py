@@ -14,8 +14,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 RETRY = ROOT / "scripts" / "retry.sh"
 
@@ -48,12 +46,6 @@ def run(
     )
     waits = [int(line) for line in log.read_text().split()]
     return proc, waits
-
-
-# TEMPORARY: removed with the implementation.
-pytestmark = pytest.mark.xfail(
-    strict=True, reason="scripts/retry.sh is not written yet"
-)
 
 
 def test_success_on_the_first_attempt_never_waits(tmp_path: Path) -> None:
@@ -107,8 +99,11 @@ def test_jitter_only_ever_shortens_a_wait(tmp_path: Path) -> None:
 down() { return 1; }
 retry_command 'step' down || true
 """
-    for _ in range(20):
-        proc, waits = run(tmp_path, body)
+    for i in range(20):
+        # A fresh directory each time: the sleep log accumulates per run.
+        sub = tmp_path / f"run{i}"
+        sub.mkdir()
+        proc, waits = run(sub, body)
         assert proc.returncode == 0, proc.stderr
         assert len(waits) == 4
         for wait, nominal in zip(waits, (10, 20, 40, 80), strict=True):
