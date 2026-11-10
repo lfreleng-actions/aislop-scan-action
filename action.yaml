@@ -11,10 +11,11 @@
 # integrity hashes in the lock file verify the npm download. It then
 # provisions the engine binaries aislop shells out to, because 0.14.0
 # dropped the package postinstall hook that used to fetch them and a
-# scan without them silently under-reports. A single scan writes a
-# JSON report, the bundled converter derives the SARIF file from it,
-# the bundled parser renders a step summary, and the action publishes
-# the SARIF to code scanning on request.
+# scan without them silently under-reports. Both network steps retry
+# transient failures (four retries, 180 seconds; see scripts/retry.sh).
+# A single scan writes a JSON report, the bundled converter derives the
+# SARIF file from it, the bundled parser renders a step summary, and the
+# action publishes the SARIF to code scanning on request.
 #
 # The scan step never fails the job on findings: the exit-code output
 # carries the aislop gate result so callers decide enforcement. The
@@ -187,14 +188,21 @@ runs:
         # binaries it shells out to arrive in the next step.
         work="$(mktemp -d "${RUNNER_TEMP}/aislop.XXXXXX")"
         echo "workdir=${work}" >> "$GITHUB_OUTPUT"
+        # The registry fails transiently now and then. Retry the install
+        # (four retries, 180 seconds): both forms are safe to repeat, and
+        # npm reuses the tarballs it already cached.
+        # shellcheck source=scripts/retry.sh
+        . "${ACTION_PATH}/scripts/retry.sh"
         if [ "${LOCKED}" = 'true' ]; then
           # npm ci verifies every download against the integrity
           # hashes committed in the bundled package-lock.json.
           cp "${ACTION_PATH}/package.json" \
              "${ACTION_PATH}/package-lock.json" "${work}/"
-          (cd "${work}" && npm ci --no-audit --no-fund --loglevel=error)
+          (cd "${work}" && retry_command 'npm ci' \
+            npm ci --no-audit --no-fund --loglevel=error)
         else
-          (cd "${work}" && npm install --no-audit --no-fund \
+          (cd "${work}" && retry_command 'npm install' \
+            npm install --no-audit --no-fund \
             --loglevel=error "aislop@${VERSION}")
         fi
         bin="${work}/node_modules/.bin/aislop"
@@ -210,6 +218,7 @@ runs:
       shell: 'bash'
       env:
         AISLOP_NO_TELEMETRY: '1'
+        ACTION_PATH: ${{ github.action_path }}
         WORKDIR: ${{ steps.install.outputs.workdir }}
         REQUIRE: ${{ inputs.require-engines }}
       run: |
@@ -231,30 +240,48 @@ runs:
         # score, which reads as a clean repository rather than an
         # incomplete scan.
         tools="${WORKDIR}/node_modules/.bin/aislop-tools"
-        if [ -x "${tools}" ]; then
+        engine_bin="${WORKDIR}/node_modules/aislop/tools/bin"
+        # shellcheck source=scripts/retry.sh
+        . "${ACTION_PATH}/scripts/retry.sh"
+        # A system installation counts: aislop resolves ruff and
+        # golangci-lint from the PATH as well as from its bundled
+        # copies, so a runner that preinstalls them has full coverage
+        # even when the download failed.
+        engine_present() {
+          [ -x "${engine_bin}/$1" ] || command -v "$1" > /dev/null 2>&1
+        }
+        # One provisioning attempt, judged by outcome. The installer
+        # downloads from GitHub release assets and gives up after three
+        # tries about a second apart, so an outage of any length fails
+        # it. Rerunning is safe: it skips a tool already present, so a
+        # retry fetches only what is missing.
+        provision_engines() {
+          if [ ! -x "${tools}" ]; then
+            # An aislop-version override can select a pre-0.14.0
+            # release, which provisions the binaries from its
+            # postinstall hook and ships no aislop-tools entry point.
+            # Fall through to the same outcome check rather than failing
+            # on the missing installer; there is nothing to retry.
+            echo 'aislop-tools absent; relying on the package postinstall'
+            return 0
+          fi
           # aislop-tools exits non-zero when ANY bundled tool fails,
           # including the optional .NET analyzers it pulls from
           # api.nuget.org, even when ruff and golangci-lint installed
           # cleanly. Its exit code cannot separate a partial failure
           # from a total one, so record it and verify by outcome.
-          rc=0
+          local rc=0
           (cd "${WORKDIR}" && "${tools}") || rc=$?
           if [ "${rc}" -ne 0 ]; then
             echo "aislop-tools exit code: ${rc};" \
                  'verifying the required binaries by outcome'
           fi
-        else
-          # An aislop-version override can select a pre-0.14.0 release,
-          # which provisions the binaries from its postinstall hook and
-          # ships no aislop-tools entry point. Fall through to the same
-          # outcome check rather than failing on the missing installer.
-          echo 'aislop-tools absent; relying on the package postinstall'
-        fi
-        engine_bin="${WORKDIR}/node_modules/aislop/tools/bin"
-        # A system installation counts: aislop resolves ruff and
-        # golangci-lint from the PATH as well as from its bundled
-        # copies, so a runner that preinstalls them has full coverage
-        # even when the download failed.
+          engine_present ruff && engine_present golangci-lint
+        }
+        # Retry until both binaries are present (four retries, 180
+        # seconds). Whatever is still missing afterwards takes the
+        # report-and-decide path below.
+        retry_command 'aislop-tools' provision_engines || true
         missing=''
         langs=''
         for tool in ruff golangci-lint; do
