@@ -318,6 +318,19 @@ runs:
           exit 1
         fi
 
+    # The bundled scripts run on an interpreter this action chooses, not
+    # whatever python3 the caller's PATH resolves first. The explicit
+    # version keeps setup-python from reading a .python-version file in
+    # the audited workspace, and update-environment 'false' leaves the
+    # caller's PATH and environment untouched for later steps.
+    - name: 'Set up Python'
+      id: 'python'
+      # yamllint disable-line rule:line-length
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+      with:
+        python-version: '3.12'
+        update-environment: false
+
     - name: 'Run aislop scan (advisory)'
       id: 'scan'
       shell: 'bash'
@@ -331,6 +344,7 @@ runs:
         EXTRA_ARGS: ${{ inputs.extra-args }}
         ENGINES_READY: ${{ steps.engines.outputs.ready }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.python.outputs.python-path }}
       run: |
         set -euo pipefail
         case "${SCAN_MODE}" in
@@ -389,7 +403,7 @@ runs:
         # two from disagreeing (a dependency audit that times out in
         # only one scan adds or drops a finding). The converter fails,
         # and writes nothing, on a report it cannot map.
-        python3 "${ACTION_PATH}/scripts/aislop_sarif.py" \
+        "${PYTHON}" -I "${ACTION_PATH}/scripts/aislop_sarif.py" \
           "${report}" "${sarif}"
         jq -e . "${sarif}" > /dev/null
         score="$(jq -r '.score // empty' "${report}")"
@@ -402,8 +416,10 @@ runs:
         # degraded instead, and fold in a missing engine binary, which
         # is the same kind of gap. The rule list lives in the coverage
         # module so the count and the summary cannot disagree.
-        coverage="${ACTION_PATH}/scripts/aislop_coverage.py"
-        advisory="$(python3 "${coverage}" count "${report}")"
+        # -E -s is -I without -P: the module imports a sibling from the
+        # action's own scripts directory, which -P drops from sys.path.
+        advisory="$("${PYTHON}" -E -s \
+          "${ACTION_PATH}/scripts/aislop_coverage.py" count "${report}")"
         degraded='false'
         if [ "${advisory}" != '0' ] || [ "${ENGINES_READY}" != 'true' ]; then
           degraded='true'
@@ -431,9 +447,12 @@ runs:
         AISLOP_REPOSITORY: ${{ inputs.summary-repository }}
         AISLOP_SHA: ${{ inputs.summary-sha }}
         ACTION_PATH: ${{ github.action_path }}
+        PYTHON: ${{ steps.python.outputs.python-path }}
       run: |
         set -euo pipefail
-        python3 "${ACTION_PATH}/scripts/aislop_summary.py"
+        # -E -s rather than -I: the script imports its siblings from
+        # the action's scripts directory, which -I drops from sys.path.
+        "${PYTHON}" -E -s "${ACTION_PATH}/scripts/aislop_summary.py"
 
     - name: 'Upload SARIF to code scanning'
       if: >-

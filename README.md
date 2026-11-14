@@ -26,8 +26,11 @@ Deploy it across an estate from one place — an organisation required
 workflow — or opt in per repository with a short caller workflow.
 
 The action runs on Linux and macOS runners and needs Node.js 22.13.0
-or newer, `jq`, and `python3` on the PATH. GitHub-hosted runners ship
-all three; self-hosted runners may need `actions/setup-node`.
+or newer and `jq` on the PATH. GitHub-hosted runners ship both;
+self-hosted runners may need `actions/setup-node`. The action runs its
+bundled Python scripts on a Python 3.12 that it provisions itself with
+`actions/setup-python`, so the caller's PATH never chooses the
+interpreter, and it leaves the caller's PATH and environment unchanged.
 
 ## Usage
 
@@ -329,6 +332,10 @@ Runners with a restrictive egress policy need to allow:
   engine binaries from GitHub releases. Blocking these makes the
   action fail unless the runner already provides those tools on the
   PATH, or `require-engines` is `'false'`.
+- `github.com:443`, `raw.githubusercontent.com:443`,
+  `release-assets.githubusercontent.com:443` — needed where the
+  runner's tool cache lacks Python 3.12, so `actions/setup-python`
+  downloads it. GitHub-hosted runners have it cached.
 - `api.nuget.org:443` — optional. `aislop-tools` also fetches .NET
   analyzer assemblies from here. Blocking it makes `aislop-tools` exit
   non-zero, which the action tolerates: the C# engines lose coverage
