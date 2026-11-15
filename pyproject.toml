@@ -16,11 +16,11 @@ norecursedirs = ["fixtures"]
 pythonpath = ["scripts"]
 
 [tool.basedpyright]
-# action.yaml runs the scripts on the Python 3.12 that
-# actions/setup-python provides. 3.10 is the floor the code needs (it
-# evaluates PEP 604 unions at import time), so checking against it
-# keeps the scripts portable to older interpreters.
-pythonVersion = "3.10"
+# action.yaml runs the scripts on its own commit-pinned Python 3.12,
+# which actions/setup-python provisions without touching the caller's
+# environment. Checking against 3.11, the organisation's minimum,
+# keeps the scripts free of anything newer than that floor.
+pythonVersion = "3.11"
 pythonPlatform = "All"
 typeCheckingMode = "standard"
 # The directory the pre-commit hook passes, so a bare basedpyright run
