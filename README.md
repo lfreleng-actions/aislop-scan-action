@@ -179,6 +179,25 @@ A system installation counts. aislop resolves `ruff` and
 runner that preinstalls them keeps full coverage even when the
 download fails.
 
+Set `ruff-version: 'auto'` to use the project's pinned Ruff. The action
+looks for `ruff` in `uv.lock` first, then for an exact `ruff==X.Y.Z` pin
+in the `[dependency-groups]` table of `pyproject.toml`. It reads both
+files from `working-directory` and keeps aislop's normal resolution if
+neither supplies a pin. If `uv.lock` lacks a Ruff entry and a dependency
+group's exact Ruff pin has an environment marker, `auto` stops and asks
+for an explicit version rather than evaluating the marker. Set
+`ruff-version` to an exact version (for example `'0.17.5'`) to handle
+such pins, choose between conflicting pins, or use a pin from elsewhere
+(such as pre-commit).
+
+The action installs the selected wheel from PyPI in a temporary
+environment and prepends its binary directory to `PATH` for the scan.
+It does not install project dependencies or change `PATH` for later
+steps. A trusted Ruff in the scan root's existing `.venv` or `venv`
+still takes precedence in aislop. If the wheel install fails, the
+action stops rather than scan with a different version. Enable
+automatic selection for checkouts whose Ruff pin you trust.
+
 The report's per-engine `skipped` flag cannot stand in for this check
 either: it also reads `true` when the scan scope holds no files of
 that language, which is routine in `changes` mode.
@@ -200,7 +219,7 @@ A scheduled scan of an entire organisation installs aislop once per
 repository, so a short outage of the npm registry or of GitHub's release
 CDN can fail a share of the jobs at once. On 9 November an outage of the release
 CDN failed 21 of 129 jobs of the sister zizmor scan. The action retries
-both network steps:
+downloads:
 
 - **`npm ci`** (or `npm install` for an `aislop-version` override)
   retries a failed install. npm reuses the tarballs it already cached, so
@@ -211,8 +230,10 @@ both network steps:
   tool already installed. The retry judges the outcome rather than the
   exit code, so a failing optional .NET analyzer download never triggers
   one.
+- **Ruff wheel install** retries when `ruff-version` selects a project
+  pin or an explicit version.
 
-The schedule is the same for both: at most four retries, waiting about
+The schedule allows at most four retries, waiting about
 10, 20, 40 and 80 seconds, each wait cut by up to a quarter at random so
 that parallel jobs do not retry in step. The action stops retrying once
 the next wait would take a step past 180 seconds. `scripts/retry.sh`
@@ -274,18 +295,19 @@ then re-run.
 
 <!-- markdownlint-disable MD013 -->
 
-| Name                 | Default   | Description                                                                                   |
-| -------------------- | --------- | --------------------------------------------------------------------------------------------- |
-| `scan-mode`          | `changes` | Scan scope: `changes` audits files changed relative to `base`; `full` audits everything.      |
-| `base`               | `""`      | Git ref changes compare against (for example `origin/main`). Empty compares to HEAD.          |
-| `working-directory`  | `.`       | Path within the workspace to scan.                                                            |
-| `aislop-version`     | `""`      | Override the bundled pin (for example `0.16.0`). Bypasses the bundled lock file.              |
-| `extra-args`         | `""`      | Extra raw arguments appended to the aislop call; the action rejects `--sarif` and `--format`. |
-| `annotate`           | `'true'`  | Emit inline annotations for the top findings: `'true'` or `'false'`.                          |
-| `upload-sarif`       | `'false'` | Publish SARIF to code scanning from the action: `'true'` or `'false'`.                        |
-| `require-engines`    | `'true'`  | Fail when `ruff` or `golangci-lint` go missing; `'false'` warns and scans anyway.             |
-| `summary-repository` | `""`      | owner/repo label for step-summary links; takes effect when paired with a valid `summary-sha`. |
-| `summary-sha`        | `""`      | Commit SHA (7–40 hex digits) for step-summary links; pairs with `summary-repository`.         |
+| Name                 | Default   | Description                                                                                       |
+| -------------------- | --------- | ------------------------------------------------------------------------------------------------- |
+| `scan-mode`          | `changes` | Scan scope: `changes` audits files changed relative to `base`; `full` audits everything.          |
+| `base`               | `""`      | Git ref changes compare against (for example `origin/main`). Empty compares to HEAD.              |
+| `working-directory`  | `.`       | Path within the workspace to scan.                                                                |
+| `aislop-version`     | `""`      | Override the bundled pin (for example `0.16.0`). Bypasses the bundled lock file.                  |
+| `ruff-version`       | `""`      | Exact Ruff version or `auto` to read project pins. Empty keeps default resolution.                |
+| `extra-args`         | `""`      | Extra raw arguments appended to the aislop call; the action rejects `--sarif` and `--format`.     |
+| `annotate`           | `'true'`  | Emit inline annotations for the top findings: `'true'` or `'false'`.                              |
+| `upload-sarif`       | `'false'` | Publish SARIF to code scanning from the action: `'true'` or `'false'`.                            |
+| `require-engines`    | `'true'`  | Fail when `ruff` or `golangci-lint` go missing; `'false'` warns and scans anyway.                 |
+| `summary-repository` | `""`      | owner/repo label for step-summary links; takes effect when paired with a valid `summary-sha`.     |
+| `summary-sha`        | `""`      | Commit SHA (7–40 hex digits) for step-summary links; pairs with `summary-repository`.             |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -327,6 +349,8 @@ extra secrets.
 Runners with a restrictive egress policy need to allow:
 
 - `registry.npmjs.org:443` — the aislop package install.
+- `pypi.org:443`, `files.pythonhosted.org:443` — the optional Ruff
+  wheel install when `ruff-version` selects a version.
 - `github.com:443`, `release-assets.githubusercontent.com:443` — the
   `aislop-tools` installer downloads the `ruff` and `golangci-lint`
   engine binaries from GitHub releases. Blocking these makes the

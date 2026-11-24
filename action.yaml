@@ -11,8 +11,8 @@
 # integrity hashes in the lock file verify the npm download. It then
 # provisions the engine binaries aislop shells out to, because 0.14.0
 # dropped the package postinstall hook that used to fetch them and a
-# scan without them silently under-reports. Both network steps retry
-# transient failures (four retries, 180 seconds; see scripts/retry.sh).
+# scan without them silently under-reports. Downloads retry transient
+# failures (four retries, 180 seconds; see scripts/retry.sh).
 # A single scan writes a JSON report, the bundled converter derives the
 # SARIF file from it, the bundled parser renders a step summary, and the
 # action publishes the SARIF to code scanning on request.
@@ -54,6 +54,13 @@ inputs:
       Override the bundled pin with an explicit version (for example
       0.16.0). An override bypasses the bundled lock file and its
       integrity data.
+    required: false
+    default: ''
+  ruff-version:
+    description: >-
+      Install an exact Ruff version (X.Y.Z) or set 'auto' to read a pin
+      from uv.lock or pyproject.toml dependency groups in the scan root.
+      Empty keeps aislop's default Ruff resolution.
     required: false
     default: ''
   extra-args:
@@ -213,6 +220,54 @@ runs:
         echo "aislop=${bin}" >> "$GITHUB_OUTPUT"
         "${bin}" -V
 
+    # Use a fixed interpreter for the bundled scripts without changing the
+    # caller's Python environment or reading its .python-version file.
+    - name: 'Set up Python'
+      id: 'python'
+      # yamllint disable-line rule:line-length
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+      with:
+        python-version: '3.12'
+        update-environment: false
+
+    - name: 'Prepare project Ruff'
+      id: 'ruff'
+      shell: 'bash'
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        INSTALL_DIR: ${{ steps.install.outputs.workdir }}
+        PYTHON: ${{ steps.python.outputs.python-path }}
+        RUFF_VERSION: ${{ inputs.ruff-version }}
+        SCAN_DIR: ${{ inputs.working-directory }}
+      run: | # zizmor: ignore[adhoc-packages]
+        set -euo pipefail
+        if [ -z "${RUFF_VERSION}" ]; then
+          exit 0
+        fi
+        version="$("${PYTHON}" -I "${ACTION_PATH}/scripts/ruff_version.py" \
+          -- "${RUFF_VERSION}" "${SCAN_DIR}")"
+        if [ -z "${version}" ]; then
+          echo 'No exact project Ruff pin found; using normal aislop resolution'
+          exit 0
+        fi
+        # Install only the validated pin from PyPI, not the project's
+        # dependencies, index configuration, or build scripts.
+        # shellcheck source=scripts/retry.sh
+        . "${ACTION_PATH}/scripts/retry.sh"
+        venv="${INSTALL_DIR}/ruff-env"
+        "${PYTHON}" -I -m venv "${venv}"
+        PIP_CONFIG_FILE=/dev/null retry_command 'Ruff wheel install' \
+          "${venv}/bin/python" -I -m pip --isolated \
+          --disable-pip-version-check --no-cache-dir install \
+          --index-url https://pypi.org/simple --no-deps --only-binary=:all: \
+          "ruff==${version}"
+        # Expose Ruff without shadowing other engines' Python or pip.
+        ruff_bin="${INSTALL_DIR}/ruff-bin"
+        mkdir -p "${ruff_bin}"
+        mv "${venv}/bin/ruff" "${ruff_bin}/ruff"
+        "${ruff_bin}/ruff" --version
+        echo "bin=${ruff_bin}" >> "$GITHUB_OUTPUT"
+
     - name: 'Provision engine binaries'
       id: 'engines'
       shell: 'bash'
@@ -221,6 +276,7 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         WORKDIR: ${{ steps.install.outputs.workdir }}
         REQUIRE: ${{ inputs.require-engines }}
+        RUFF_BIN_DIR: ${{ steps.ruff.outputs.bin }}
       run: |
         set -euo pipefail
         case "${REQUIRE}" in
@@ -231,6 +287,9 @@ runs:
             exit 1
             ;;
         esac
+        if [ -n "${RUFF_BIN_DIR}" ]; then
+          export PATH="${RUFF_BIN_DIR}:${PATH}"
+        fi
         # aislop delegates its Python engines to ruff and its Go engines
         # to golangci-lint. Releases before 0.14.0 fetched both from a
         # package postinstall hook; 0.14.0 dropped that hook and moved
@@ -289,7 +348,10 @@ runs:
             ruff) lang='Python' ;;
             *) lang='Go' ;;
           esac
-          if [ -x "${engine_bin}/${tool}" ]; then
+          if [ "${tool}" = ruff ] && [ -n "${RUFF_BIN_DIR}" ] \
+             && [ -x "${RUFF_BIN_DIR}/ruff" ]; then
+            echo 'engine binary ready: ruff (Python, project pin)'
+          elif [ -x "${engine_bin}/${tool}" ]; then
             echo "engine binary ready: ${tool} (${lang}, bundled)"
           elif command -v "${tool}" > /dev/null 2>&1; then
             echo "engine binary ready: ${tool} (${lang}, system)"
@@ -318,19 +380,6 @@ runs:
           exit 1
         fi
 
-    # The bundled scripts run on an interpreter this action chooses, not
-    # whatever python3 the caller's PATH resolves first. The explicit
-    # version keeps setup-python from reading a .python-version file in
-    # the audited workspace, and update-environment 'false' leaves the
-    # caller's PATH and environment untouched for later steps.
-    - name: 'Set up Python'
-      id: 'python'
-      # yamllint disable-line rule:line-length
-      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
-      with:
-        python-version: '3.12'
-        update-environment: false
-
     - name: 'Run aislop scan (advisory)'
       id: 'scan'
       shell: 'bash'
@@ -345,6 +394,7 @@ runs:
         ENGINES_READY: ${{ steps.engines.outputs.ready }}
         ACTION_PATH: ${{ github.action_path }}
         PYTHON: ${{ steps.python.outputs.python-path }}
+        RUFF_BIN_DIR: ${{ steps.ruff.outputs.bin }}
       run: |
         set -euo pipefail
         case "${SCAN_MODE}" in
@@ -391,6 +441,9 @@ runs:
         # Word-splitting of EXTRA_ARGS is intentional (passthrough).
         # shellcheck disable=SC2086
         rc=0
+        if [ -n "${RUFF_BIN_DIR}" ]; then
+          export PATH="${RUFF_BIN_DIR}:${PATH}"
+        fi
         (cd "${WORKDIR}" \
           && "${AISLOP_BIN}" "${args[@]}" ${EXTRA_ARGS} > "${report}") \
           || rc=$?

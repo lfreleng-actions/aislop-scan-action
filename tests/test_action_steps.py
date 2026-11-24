@@ -63,6 +63,7 @@ def run_step(
         "GITHUB_OUTPUT": str(tmp_path / "github_output"),
         "RUNNER_TEMP": str(tmp_path),
         "ACTION_PATH": str(ROOT),
+        "RUFF_BIN_DIR": "",
         **NO_WAIT,
         **env,
     }
@@ -328,7 +329,6 @@ chmod +x "${0%/*}/ruff"
 """
 
 
-@pytest.mark.xfail(raises=StopIteration, strict=True, reason="Ruff step not added yet")
 @pytest.mark.parametrize(
     ("requested", "lock", "groups", "wanted"),
     [
@@ -411,11 +411,11 @@ def test_prepare_ruff(
             "INSTALL_FAILS": "true" if requested == "0.17.5" else "false",
         },
     )
-    assert proc.returncode == (1 if wanted is None else 0), proc.stderr
+    assert (proc.returncode == 0) == (wanted is not None), proc.stderr
     ruff_bin = outputs(tmp_path).get("bin", "")
     if wanted:
         assert Path(ruff_bin).is_relative_to(install)
-        assert (Path(ruff_bin) / "ruff").is_file()
+        assert sorted(path.name for path in Path(ruff_bin).iterdir()) == ["ruff"]
         pip_args = (install / "pip-args").read_text().splitlines()
         assert pip_args[-1] == f"ruff=={wanted}"
         assert "--no-deps" in pip_args
@@ -439,7 +439,6 @@ echo '{"cliVersion": "0.22.1", "score": 100, "diagnostics": []}'
 """
 
 
-@pytest.mark.xfail(raises=StopIteration, strict=True, reason="Ruff step not added yet")
 def test_scan_uses_the_prepared_ruff(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
