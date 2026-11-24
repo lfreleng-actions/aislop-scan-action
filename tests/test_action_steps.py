@@ -14,6 +14,7 @@ waits are set to zero, so the tests do not sleep.
 import re
 import stat
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -305,3 +306,184 @@ def test_engines_report_only_the_languages_actually_missing(tmp_path: Path) -> N
     assert proc.returncode == 0, proc.stderr
     assert "missing: golangci-lint. Go findings" in proc.stdout
     assert "Python" not in proc.stdout.split("missing:")[1]
+
+
+RUFF_INSTALLER_STUB = """\
+#!/bin/bash
+set -eu
+if [ "$2" = '-m' ] && [ "$3" = 'venv' ]; then
+    mkdir -p "$4/bin"
+    cp "$0" "$4/bin/python"
+    exit 0
+fi
+if [ "$2" != '-m' ] || [ "$3" != 'pip' ]; then
+    exec "$REAL_PYTHON" "$@"
+fi
+printf '%s\\n' "$@" > "$INSTALL_DIR/pip-args"
+if [ "$INSTALL_FAILS" = 'true' ]; then
+    exit 1
+fi
+printf '#!/bin/sh\\necho "project $*"\\n' > "${0%/*}/ruff"
+chmod +x "${0%/*}/ruff"
+"""
+
+
+@pytest.mark.xfail(raises=StopIteration, strict=True, reason="Ruff step not added yet")
+@pytest.mark.parametrize(
+    ("requested", "lock", "groups", "wanted"),
+    [
+        (
+            "0.17.6",
+            'name = "ruff"\nversion = "0.17.5"',
+            """dev = ['ruff==0.17.4; python_version >= "3.10"']""",
+            "0.17.6",
+        ),
+        (
+            "auto",
+            'name = "ruff"\nversion = "0.17.5"',
+            """dev = ['ruff==0.17.4; python_version >= "3.10"']""",
+            "0.17.5",
+        ),
+        (
+            "auto",
+            'name = "other"\nversion = "1.2.3"',
+            'dev = ["Ruff == 0.17.4"]',
+            "0.17.4",
+        ),
+        (
+            "auto",
+            'name = "other"\nversion = "1.2.3"',
+            """dev = ['ruff>=0.17.4; python_version >= "3.10"']""",
+            "",
+        ),
+        pytest.param(
+            "auto",
+            'name = "other"\nversion = "1.2.3"',
+            """dev = ['ruff==0.17.6; python_version >= "3.10"']""",
+            None,
+            id="marker-pin-without-ruff-lock",
+        ),
+        pytest.param(
+            "auto",
+            "",
+            """dev = ["ruff==0.17.4"]
+lint = ['Ruff ( == 0.17.4 ) ; sys_platform == "linux"']
+""",
+            None,
+            id="plain-and-marker-pins",
+        ),
+        ("", 'name = "ruff"\nversion = "0.17.5"', "", ""),
+        ("ruff @ https://example.invalid", "", "", None),
+        (
+            "auto",
+            'name = "ruff"\nversion = "0.17.5"\n[[package]]\n'
+            'name = "ruff"\nversion = "0.17.6"',
+            'dev = ["ruff==0.17.4"]',
+            None,
+        ),
+        ("0.17.5", "", "", None),
+    ],
+)
+def test_prepare_ruff(
+    tmp_path: Path, requested: str, lock: str, groups: str, wanted: str | None
+) -> None:
+    project = tmp_path / "nested project"
+    project.mkdir()
+    (project / "uv.lock").write_text(f"[[package]]\n{lock}\n")
+    (project / "pyproject.toml").write_text(f"[dependency-groups]\n{groups}\n")
+    # A pin in the parent must not override inputs from working-directory.
+    (tmp_path / "uv.lock").write_text(
+        '[[package]]\nname = "ruff"\nversion = "0.17.3"\n'
+    )
+    install = tmp_path / "install"
+    install.mkdir()
+    installer = tmp_path / "stubs" / "installer"
+    write_executable(installer, RUFF_INSTALLER_STUB)
+    proc = run_step(
+        tmp_path,
+        "Prepare project Ruff",
+        {
+            "RUFF_VERSION": requested,
+            "SCAN_DIR": str(project),
+            "INSTALL_DIR": str(install),
+            "PYTHON": str(installer),
+            "REAL_PYTHON": sys.executable,
+            "INSTALL_FAILS": "true" if requested == "0.17.5" else "false",
+        },
+    )
+    assert proc.returncode == (1 if wanted is None else 0), proc.stderr
+    ruff_bin = outputs(tmp_path).get("bin", "")
+    if wanted:
+        assert Path(ruff_bin).is_relative_to(install)
+        assert (Path(ruff_bin) / "ruff").is_file()
+        pip_args = (install / "pip-args").read_text().splitlines()
+        assert pip_args[-1] == f"ruff=={wanted}"
+        assert "--no-deps" in pip_args
+        assert "--only-binary=:all:" in pip_args
+    else:
+        assert not ruff_bin
+        if requested == "auto" and wanted is None:
+            assert "set ruff-version" in proc.stderr
+            assert not (install / "pip-args").exists()
+
+
+# aislop resolves ruff from the PATH before its bundled copy; the stub
+# does the same and records which executable handled each engine.
+AISLOP_SCAN_STUB = """\
+#!/bin/sh
+set -eu
+ruff="$(command -v ruff || echo "$BUNDLED_RUFF")"
+"$ruff" check >> "$RUFF_LOG"
+"$ruff" format >> "$RUFF_LOG"
+echo '{"cliVersion": "0.22.1", "score": 100, "diagnostics": []}'
+"""
+
+
+@pytest.mark.xfail(raises=StopIteration, strict=True, reason="Ruff step not added yet")
+def test_scan_uses_the_prepared_ruff(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    install = tmp_path / "install"
+    install.mkdir()
+    write_executable(tmp_path / "stubs" / "installer", RUFF_INSTALLER_STUB)
+    prepared = run_step(
+        tmp_path,
+        "Prepare project Ruff",
+        {
+            "RUFF_VERSION": "0.17.6",
+            "SCAN_DIR": str(project),
+            "INSTALL_DIR": str(install),
+            "PYTHON": str(tmp_path / "stubs" / "installer"),
+            "REAL_PYTHON": sys.executable,
+            "INSTALL_FAILS": "false",
+        },
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    ruff_bin = outputs(tmp_path)["bin"]
+
+    # Both a system ruff on the PATH and a bundled one are present, so
+    # the scan reaches the prepared copy only through the step's PATH.
+    write_executable(tmp_path / "stubs" / "ruff", '#!/bin/sh\necho "system $*"\n')
+    bundled = tmp_path / "bundled" / "ruff"
+    write_executable(bundled, '#!/bin/sh\necho "bundled $*"\n')
+    aislop = tmp_path / "aislop"
+    write_executable(aislop, AISLOP_SCAN_STUB)
+    log = tmp_path / "ruff.log"
+    proc = run_step(
+        tmp_path,
+        "Run aislop scan (advisory)",
+        {
+            "AISLOP_BIN": str(aislop),
+            "SCAN_MODE": "full",
+            "BASE": "",
+            "WORKDIR": str(project),
+            "EXTRA_ARGS": "",
+            "ENGINES_READY": "true",
+            "PYTHON": sys.executable,
+            "RUFF_BIN_DIR": ruff_bin,
+            "BUNDLED_RUFF": str(bundled),
+            "RUFF_LOG": str(log),
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert log.read_text().splitlines() == ["project check", "project format"]
